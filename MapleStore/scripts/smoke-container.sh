@@ -6,12 +6,26 @@ work_directory=$(mktemp -d -t maplestore-smoke.XXXXXXXX)
 container_id=""
 
 cleanup() {
+    local exit_status="$?"
+    if [[ "$exit_status" != 0 && -n "$container_id" ]]; then
+        printf 'Container verification failed (exit %s). State and recent logs:\n' "$exit_status" >&2
+        docker inspect --format '{{json .State}}' "$container_id" >&2 || true
+        docker logs --tail 100 "$container_id" >&2 || true
+    fi
     if [[ -n "$container_id" ]]; then docker rm -f "$container_id" >/dev/null 2>&1 || true; fi
     if [[ -d "$work_directory" && "$(basename "$work_directory")" == maplestore-smoke.* ]]; then
-        rm -rf -- "$work_directory"
+        rm -rf -- "$work_directory" || true
     fi
+    return "$exit_status"
 }
 trap cleanup EXIT
+
+refresh_url() {
+    local port
+    port=$(docker port "$container_id" 8080/tcp | head -n1)
+    export SMOKE_URL="http://$port"
+    printf 'Container endpoint: %s\n' "$SMOKE_URL"
+}
 
 mkdir "$work_directory/data" "$work_directory/config"
 runtime_uid=$(id -u)
@@ -33,8 +47,7 @@ container_id=$(docker run --detach \
     --mount "type=bind,source=$work_directory/config,target=/config" \
     "$image")
 
-port=$(docker port "$container_id" 8080/tcp | head -n1)
-export SMOKE_URL="http://$port"
+refresh_url
 export SMOKE_PASSWORD="$password"
 
 python3 - <<'PY'
@@ -92,10 +105,19 @@ PY
 docker exec --user "$runtime_uid:$runtime_gid" "$container_id" /usr/local/bin/maplestore healthcheck
 docker exec "$container_id" sh -c 'test "$(awk '\''/^Uid:/{print $2}'\'' /proc/1/status)" != 0'
 docker restart "$container_id" >/dev/null
+refresh_url
+ready=false
 for attempt in {1..30}; do
-    if curl --silent --fail "$SMOKE_URL/healthz" >/dev/null; then break; fi
+    if curl --silent --fail --max-time 5 "$SMOKE_URL/healthz" >/dev/null; then
+        ready=true
+        break
+    fi
     sleep 1
 done
+if [[ "$ready" != true ]]; then
+    printf 'Container did not become ready after restart: %s\n' "$SMOKE_URL" >&2
+    exit 1
+fi
 python3 - <<'PY'
 import base64
 import os

@@ -57,13 +57,17 @@ jobs:
           tags: maplestore:ci
           cache-from: type=gha,scope=maplestore-verify
           cache-to: type=gha,mode=max,scope=maplestore-verify
-      - name: Verify Compose and container startup
+      - name: Validate Compose configuration
         shell: bash
         env:
           MAPLESTORE_ADMIN_PASSWORD: ci-compose-validation-only
         run: |
           set -euo pipefail
           docker compose -f MapleStore/compose.yaml config --quiet
+      - name: Verify container startup and persistence
+        shell: bash
+        run: |
+          set -euo pipefail
           bash MapleStore/scripts/smoke-container.sh maplestore:ci
 
   publish:
