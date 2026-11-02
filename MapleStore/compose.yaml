@@ -2,21 +2,17 @@ name: maplestore
 
 services:
   maplestore:
-    image: maplestore:local
-    build:
-      context: .
-      args:
-        GOPROXY: "${MAPLESTORE_GOPROXY:-https://proxy.golang.org,direct}"
+    image: "${MAPLESTORE_IMAGE:-ghcr.io/fengzhanhuaer/maplestore:latest}"
     restart: unless-stopped
     init: true
     ports:
-      - "${MAPLESTORE_BIND_IP:-127.0.0.1}:${MAPLESTORE_PORT:-28111}:8080"
+      - "${MAPLESTORE_BIND_IP:-127.0.0.1}:${MAPLESTORE_PORT:-8080}:8080"
     environment:
       MAPLESTORE_ADDR: ":8080"
       MAPLESTORE_DATA_DIR: /data
       MAPLESTORE_CONFIG_DIR: /config
       MAPLESTORE_ADMIN_USERNAME: "${MAPLESTORE_ADMIN_USERNAME:-admin}"
-      MAPLESTORE_ADMIN_PASSWORD: "${MAPLESTORE_ADMIN_PASSWORD:?请在 .env 中设置管理员密码，至少 12 字节}"
+      MAPLESTORE_ADMIN_PASSWORD: "${MAPLESTORE_ADMIN_PASSWORD:-请在 .env 中设置管理员密码，至少 12 字节}"
       MAPLESTORE_SECURE_COOKIE: "${MAPLESTORE_SECURE_COOKIE:-false}"
       MAPLESTORE_MAX_UPLOAD_BYTES: "${MAPLESTORE_MAX_UPLOAD_BYTES:-10737418240}"
       PUID: "${MAPLESTORE_UID:-1000}"
