@@ -32,7 +32,7 @@ function showLogin() {
   byId("login-view").hidden = false;
   byId("file-list").replaceChildren();
   byId("user-list").replaceChildren();
-  if (byId("edit-dialog").open) byId("edit-dialog").close();
+  closeDialog();
 }
 
 async function errorMessage(response) {
@@ -208,6 +208,7 @@ function openDialog(title,fields,action,options={}) {
     input.type = field.type || "text";
     input.value = field.value || (input.type === "checkbox" ? "on" : "");
     input.required = field.required !== false && input.type !== "checkbox";
+    input.readOnly = !!field.readOnly;
     input.autocomplete = input.type === "password" ? "new-password" : "off";
     if (input.type === "password") input.minLength = 12;
     if (field.placeholder) input.placeholder = field.placeholder;
@@ -224,6 +225,7 @@ function closeDialog(cancelled=true) {
   if (cancelled) dialogCancel?.();
   dialogCancel = null;
   dialogAction = null;
+  byId("dialog-fields").replaceChildren();
 }
 
 function mkdir() {
@@ -325,7 +327,12 @@ async function loadUsers() {
     if (user.admin) actions.append(element("span","由 Compose 管理","muted"));
     else {
       const wrapper=element("div",undefined,"row-actions");
-      wrapper.append(actionButton("重置密码",()=>openDialog(`重置 ${user.username} 的密码`,[{name:"password",label:"新密码（至少 12 字节）",type:"password"}],async form=>{await api(`/api/users/${user.username}`,"PATCH",{password:form.get("password")});toast("密码已重置，原有会话已失效");})),actionButton(user.readOnly ? "设为读写" : "设为只读",async()=>{await api(`/api/users/${user.username}`,"PATCH",{readOnly:!user.readOnly});await loadUsers();toast("权限已更新");}),actionButton(user.disabled ? "启用" : "停用",async()=>{await api(`/api/users/${user.username}`,"PATCH",{disabled:!user.disabled});await loadUsers();toast(user.disabled ? "账号已启用" : "账号已停用，文件保留");},!user.disabled));
+      wrapper.append(actionButton("查看密码",async()=>{
+        const account = state.user;
+        const result = await api(`/api/users/${user.username}/password`,"POST");
+        if (state.user !== account || !state.user?.admin) return;
+        openDialog(`${user.username} 的密码`,[{name:"password",label:"成员密码",value:result.password,readOnly:true}],async()=>{},{submit:"关闭",description:"仅管理员可查看，请勿分享或截图泄露。"});
+      }),actionButton("重置密码",()=>openDialog(`重置 ${user.username} 的密码`,[{name:"password",label:"新密码（至少 12 字节）",type:"password"}],async form=>{await api(`/api/users/${user.username}`,"PATCH",{password:form.get("password")});toast("密码已重置，原有会话已失效");})),actionButton(user.readOnly ? "设为读写" : "设为只读",async()=>{await api(`/api/users/${user.username}`,"PATCH",{readOnly:!user.readOnly});await loadUsers();toast("权限已更新");}),actionButton(user.disabled ? "启用" : "停用",async()=>{await api(`/api/users/${user.username}`,"PATCH",{disabled:!user.disabled});await loadUsers();toast(user.disabled ? "账号已启用" : "账号已停用，文件保留");},!user.disabled));
       actions.append(wrapper);
     }
     row.append(actions);byId("user-list").append(row);

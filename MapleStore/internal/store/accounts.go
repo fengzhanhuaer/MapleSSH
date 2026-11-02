@@ -1,6 +1,7 @@
 package store
 
 import (
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
@@ -32,16 +33,18 @@ type AccountPatch struct {
 }
 
 type accountRecord struct {
-	User         User   `json:"user"`
-	PasswordHash string `json:"passwordHash"`
+	User              User   `json:"user"`
+	PasswordHash      string `json:"passwordHash"`
+	PasswordEncrypted string `json:"passwordEncrypted,omitempty"`
 }
 
 type Accounts struct {
-	mu        sync.RWMutex
-	directory string
-	admin     string
-	users     map[string]accountRecord
-	dummyHash string
+	mu             sync.RWMutex
+	directory      string
+	admin          string
+	users          map[string]accountRecord
+	dummyHash      string
+	passwordCipher cipher.AEAD
 }
 
 var usernamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{2,31}$`)
@@ -86,6 +89,17 @@ func OpenAccounts(directory, admin, password string) (*Accounts, error) {
 		}
 	} else if !os.IsNotExist(err) {
 		return nil, err
+	}
+	accounts.passwordCipher, err = openPasswordCipher(directory, len(accounts.users) == 0)
+	if err != nil {
+		return nil, err
+	}
+	for username, record := range accounts.users {
+		if !record.User.Admin {
+			if _, err := accounts.decryptPassword(username, record.PasswordEncrypted); err != nil {
+				return nil, fmt.Errorf("账号 %s 的密码密文无效，请检查完整的 config 备份: %w", username, err)
+			}
+		}
 	}
 	adminRecord, exists := accounts.users[admin]
 	if !exists || !verifyPassword(adminRecord.PasswordHash, password) {
@@ -145,6 +159,7 @@ func (accounts *Accounts) Create(username, password string, readOnly bool) error
 	if err != nil {
 		return err
 	}
+	encrypted := accounts.encryptPassword(username, password)
 	accounts.mu.Lock()
 	defer accounts.mu.Unlock()
 	if _, exists := accounts.users[username]; exists {
@@ -154,7 +169,7 @@ func (accounts *Accounts) Create(username, password string, readOnly bool) error
 		return errors.New("最多支持 128 个账号")
 	}
 	users := accounts.copyUsers()
-	users[username] = accountRecord{User: User{Username: username, ReadOnly: readOnly, Revision: 1}, PasswordHash: hashed}
+	users[username] = accountRecord{User: User{Username: username, ReadOnly: readOnly, Revision: 1}, PasswordHash: hashed, PasswordEncrypted: encrypted}
 	if err := accounts.save(users); err != nil {
 		return err
 	}
@@ -166,13 +181,14 @@ func (accounts *Accounts) Update(username string, patch AccountPatch) error {
 	if username == accounts.admin {
 		return errors.New("管理员凭据由 Compose 环境变量管理，修改后重启生效")
 	}
-	var hashed string
+	var hashed, encrypted string
 	if patch.Password != "" {
 		var err error
 		hashed, err = hashPassword(patch.Password)
 		if err != nil {
 			return err
 		}
+		encrypted = accounts.encryptPassword(username, patch.Password)
 	}
 	accounts.mu.Lock()
 	defer accounts.mu.Unlock()
@@ -182,6 +198,7 @@ func (accounts *Accounts) Update(username string, patch AccountPatch) error {
 	}
 	if hashed != "" {
 		record.PasswordHash = hashed
+		record.PasswordEncrypted = encrypted
 	}
 	if patch.ReadOnly != nil {
 		record.User.ReadOnly = *patch.ReadOnly

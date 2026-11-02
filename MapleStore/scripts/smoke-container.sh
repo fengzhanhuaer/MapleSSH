@@ -89,6 +89,10 @@ cookie = headers["Set-Cookie"].split(";", 1)[0]
 admin_headers = {"Cookie":cookie, "X-CSRF-Token":session["csrf"], "Content-Type":"application/json"}
 for username in ("alice", "bob"):
     call("/api/users", "POST", json.dumps({"username":username, "password":password}).encode(), admin_headers, 201)
+_, content = call("/api/users/alice/password", "POST", headers=admin_headers)
+assert json.loads(content)["password"] == password
+_, content = call("/api/users", headers=admin_headers)
+assert all("password" not in key.lower() for user in json.loads(content) for key in user)
 
 def basic(username):
     return {"Authorization":"Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()}
@@ -99,7 +103,7 @@ assert content == b"persistent-data"
 call("/dav/proof.txt", headers=basic("bob"), expected=404)
 call("/dav/proof.txt", headers=basic("admin"), expected=404)
 call("/dav/proof.txt", expected=401)
-print("Container startup, login, WebDAV and account isolation verified")
+print("Container startup, login, WebDAV, account isolation and admin password viewing verified")
 PY
 
 docker exec --user "$runtime_uid:$runtime_gid" "$container_id" /usr/local/bin/maplestore healthcheck
@@ -120,10 +124,18 @@ if [[ "$ready" != true ]]; then
 fi
 python3 - <<'PY'
 import base64
+import json
 import os
 import urllib.request
 headers = {"Authorization":"Basic " + base64.b64encode(("alice:" + os.environ["SMOKE_PASSWORD"]).encode()).decode()}
 with urllib.request.urlopen(urllib.request.Request(os.environ["SMOKE_URL"] + "/dav/proof.txt", headers=headers), timeout=5) as response:
     assert response.read() == b"persistent-data"
-print("Account and file persistence after restart verified")
+credentials = json.dumps({"username":"admin", "password":os.environ["SMOKE_PASSWORD"]}).encode()
+with urllib.request.urlopen(urllib.request.Request(os.environ["SMOKE_URL"] + "/api/login", data=credentials, headers={"Content-Type":"application/json"}), timeout=5) as response:
+    session = json.loads(response.read())
+    cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+headers = {"Cookie":cookie, "X-CSRF-Token":session["csrf"]}
+with urllib.request.urlopen(urllib.request.Request(os.environ["SMOKE_URL"] + "/api/users/alice/password", method="POST", headers=headers), timeout=5) as response:
+    assert json.loads(response.read())["password"] == os.environ["SMOKE_PASSWORD"]
+print("Account, file and encrypted password persistence after restart verified")
 PY

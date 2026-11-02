@@ -143,6 +143,30 @@ func (application *Server) serveAPI(writer http.ResponseWriter, request *http.Re
 		return
 	}
 	if strings.HasPrefix(request.URL.Path, "/api/users/") {
+		if strings.HasSuffix(request.URL.Path, "/password") {
+			if request.Method != "POST" {
+				writer.WriteHeader(405)
+				return
+			}
+			username := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/api/users/"), "/password")
+			member, exists := application.accounts.Lookup(username)
+			if !exists {
+				writeError(writer, 404, "账号不存在")
+				return
+			}
+			if member.Admin {
+				writeError(writer, 403, "管理员密码由 Compose 管理")
+				return
+			}
+			password, err := application.accounts.RevealPassword(username)
+			if err != nil {
+				writeError(writer, 500, "无法解密成员密码，请检查 config 备份")
+				return
+			}
+			application.config.Logger.Info("account_password_viewed", "actor", user.Username, "username", username)
+			writeJSON(writer, 200, map[string]string{"password": password})
+			return
+		}
 		if request.Method != "PATCH" {
 			writer.WriteHeader(405)
 			return
