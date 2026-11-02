@@ -107,7 +107,7 @@ jobs:
             echo 'tags<<MAPLESTORE_TAGS'
             echo "$image:$version"
             echo "$image:sha-${GITHUB_SHA:0:12}"
-            if [[ "$version" != edge ]]; then echo "$image:latest"; fi
+            echo "$image:latest"
             echo MAPLESTORE_TAGS
           } >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1
@@ -134,6 +134,15 @@ jobs:
             org.opencontainers.image.version=${{ steps.metadata.outputs.version }}
           cache-from: type=gha,scope=maplestore-publish
           cache-to: type=gha,mode=max,scope=maplestore-publish
+      - name: Verify published image tags
+        shell: bash
+        env:
+          IMAGE_TAGS: ${{ steps.metadata.outputs.tags }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r tag; do
+            docker buildx imagetools inspect "$tag" >/dev/null
+          done <<< "$IMAGE_TAGS"
 
   release:
     name: Publish NAS installation bundle

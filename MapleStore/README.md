@@ -40,7 +40,7 @@ docker compose ps
 docker compose logs --tail=50
 ```
 
-默认镜像为 `ghcr.io/fengzhanhuaer/maplestore:latest`，包含 linux/amd64、linux/arm64 两种架构，由 Docker 自动选择。正式安装包的 `compose.yaml` 会固定为该次发布的镜像版本；源码中的示例使用 `latest`。首次正式发布成功前，没有可用的 `latest` 镜像。
+默认镜像为 `ghcr.io/fengzhanhuaer/maplestore:latest`，包含 linux/amd64、linux/arm64 两种架构，由 Docker 自动选择。main 或正式标签首次成功发布后即可拉取 `latest`。正式安装包的 `compose.yaml` 会固定为该次发布的镜像版本；源码中的示例使用 `latest`。
 
 默认只监听 NAS 回环地址 `127.0.0.1:8080`，适合通过 NAS 的 HTTPS 反向代理访问。网页入口是 `/`，WebDAV 入口是 `/dav/`。默认不公开监听所有网络接口。
 
@@ -186,14 +186,14 @@ Dockerfile 支持 BuildKit 的目标架构参数。正式发布由 GitHub Action
 | 触发方式 | 行为 |
 |---|---|
 | 修改 MapleStore 的 PR | Go race 测试、vet、镜像构建、Compose 校验和容器冒烟；不发布 |
-| 推送到 main 或手动运行默认分支 | 验证通过后发布 `edge` 和 `sha-<提交前12位>` 镜像，不更新正式版 |
+| 推送到 main 或手动运行默认分支 | 验证通过后发布 `latest`、`edge` 和 `sha-<提交前12位>` 镜像，不创建版本化 Release |
 | 推送 `maplestore-v1.0.0` 一类正式标签 | 验证通过后发布 `1.0.0`、`latest`、SHA 镜像，并创建 Release 安装包及 SHA-256 文件 |
 
-只接受 `maplestore-v主版本.次版本.补丁` 形式的稳定版本标签，避免与其他子工程混淆；不接受预发布后缀。不要重复使用已发布版本号；`latest` 指向最近完成正式标签构建的版本，发布旧版本标签也会移动它。
+只接受 `maplestore-v主版本.次版本.补丁` 形式的稳定版本标签，避免与其他子工程混淆；不接受预发布后缀。不要重复使用已发布版本号。`latest` 跟随最近完成的 main 或正式标签发布，不等同于稳定版；需要固定正式版时使用具体版本号或 digest。发布后会检查本次所有镜像标签能否从仓库读取。
 
 首次发布准备：
 
-1. 将工作流和 MapleStore 源码推送到 GitHub 的 main，确认 Actions 验证通过；此时仅提供 `edge` 镜像。
+1. 将工作流和 MapleStore 源码推送到 GitHub 的 main，确认 Actions 验证与镜像发布通过；此时已提供默认 Compose 使用的 `latest`，同时保留 `edge` 镜像。
 2. 维护者创建并推送正式标签，例如 `git tag maplestore-v1.0.0`、`git push origin maplestore-v1.0.0`。
 3. 等待对应工作流的 verify、publish、release 三个任务成功，再下载安装包或拉取正式镜像。
 
@@ -215,7 +215,7 @@ docker compose ps
 
 升级不重建、不覆盖同级 `data` 和 `config` 目录。升级前仍建议备份二者；程序回滚时可能需要恢复相应版本的配置，不能假设未来版本配置永远兼容旧版。
 
-回滚时将 `compose.yaml` 的 `image` 改为原来的具体版本，再执行相同命令。不要使用 `edge` 存放唯一一份重要文件；默认不会自动更新 NAS 上运行的容器。
+回滚时将 `compose.yaml` 的 `image` 改为原来的具体版本，再执行相同命令。`latest` 和 `edge` 都可能包含尚未正式发布的改动，不要只保留一份重要文件；默认不会自动更新 NAS 上运行的容器。
 
 ## 数据保护和边界
 
