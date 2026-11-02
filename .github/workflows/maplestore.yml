@@ -59,8 +59,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=maplestore-verify
       - name: Validate Compose configuration
         shell: bash
-        env:
-          MAPLESTORE_ADMIN_PASSWORD: ci-compose-validation-only
         run: |
           set -euo pipefail
           docker compose -f MapleStore/compose.yaml config --quiet
@@ -158,14 +156,16 @@ jobs:
           set -euo pipefail
           destination="$RUNNER_TEMP/maplestore-release"
           mkdir -p "$destination/MapleStore"
-          cp MapleStore/compose.yaml MapleStore/.env.example MapleStore/README.md "$destination/MapleStore/"
+          cp MapleStore/compose.yaml MapleStore/README.md "$destination/MapleStore/"
           IMAGE="$IMAGE" VERSION="$VERSION" DESTINATION="$destination" python3 - <<'PY'
           import os
           from pathlib import Path
-          example = Path(os.environ["DESTINATION"]) / "MapleStore" / ".env.example"
-          lines = example.read_text().splitlines()
-          lines = [f'MAPLESTORE_IMAGE={os.environ["IMAGE"]}:{os.environ["VERSION"]}' if line.startswith("MAPLESTORE_IMAGE=") else line for line in lines]
-          example.write_text("\n".join(lines) + "\n")
+          compose = Path(os.environ["DESTINATION"]) / "MapleStore" / "compose.yaml"
+          lines = compose.read_text().splitlines()
+          if sum(line.startswith("    image:") for line in lines) != 1:
+              raise SystemExit("Expected one image entry in the installation Compose file")
+          lines = [f'    image: "{os.environ["IMAGE"]}:{os.environ["VERSION"]}"' if line.startswith("    image:") else line for line in lines]
+          compose.write_text("\n".join(lines) + "\n")
           PY
           cd "$destination"
           tar -czf "MapleStore-install-$VERSION.tar.gz" MapleStore

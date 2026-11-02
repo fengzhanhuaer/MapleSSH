@@ -3,5 +3,3 @@ services:
     image: maplestore:local
     build:
       context: .
-      args:
-        GOPROXY: "${MAPLESTORE_GOPROXY:-https://proxy.golang.org,direct}"

@@ -41,7 +41,6 @@ container_id=$(docker run --detach \
     --security-opt no-new-privileges:true \
     --env "MAPLESTORE_ADMIN_USERNAME=admin" \
     --env "MAPLESTORE_ADMIN_PASSWORD=$password" \
-    --env MAPLESTORE_DATA_DIR=/data --env MAPLESTORE_CONFIG_DIR=/config \
     --env "PUID=$runtime_uid" --env "PGID=$runtime_gid" \
     --mount "type=bind,source=$work_directory/data,target=/data" \
     --mount "type=bind,source=$work_directory/config,target=/config" \
@@ -49,6 +48,7 @@ container_id=$(docker run --detach \
 
 refresh_url
 export SMOKE_PASSWORD="$password"
+[[ "$(docker inspect --format '{{json .Config.Healthcheck.Test}}' "$container_id")" == '["CMD","/usr/local/bin/maplestore","healthcheck"]' ]]
 
 python3 - <<'PY'
 import base64
