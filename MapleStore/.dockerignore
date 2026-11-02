@@ -1,0 +1,10 @@
+.env
+.git
+data
+config
+bin
+dist
+docs
+*.exe
+*.test
+*.out

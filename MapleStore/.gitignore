@@ -1,0 +1,8 @@
+/.env
+/data/
+/config/
+/bin/
+/dist/
+*.exe
+*.test
+*.out

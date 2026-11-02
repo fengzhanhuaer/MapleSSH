@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>MapleStore · 私有存储</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <section id="login-view" class="login-layout">
+    <div class="login-intro"><a class="brand" href="/"><span class="brand-icon">M</span>MapleStore</a><h1>自己的文件，<br>放在自己的地方。</h1><p>轻量、独立的 NAS 云端存储。<br>浏览器与 WebDAV，共用一个私有空间。</p><div class="intro-line">你的 NAS / 你的数据 / 你的掌控</div></div>
+    <form id="login-form" class="login-card"><h2>登录存储空间</h2><p class="muted">使用分配给你的账号，访问独立文件目录。</p><label>账号<input name="username" autocomplete="username" required autofocus maxlength="32" placeholder="输入账号"></label><label>密码<input name="password" type="password" autocomplete="current-password" required placeholder="输入密码"></label><p id="login-error" class="error" role="alert"></p><button class="primary wide" type="submit">登录</button><p class="login-note">账号之间互不可见 · 不允许匿名访问</p></form>
+  </section>
+  <div id="app-view" class="app-layout" hidden>
+    <aside class="sidebar"><a class="brand" href="/"><span class="brand-icon">M</span>MapleStore</a><p class="nav-label">存储空间</p><nav><button id="files-tab" class="nav-item active">▦ <span>我的文件</span></button><button id="users-tab" class="nav-item" hidden>♙ <span>账号管理</span></button></nav><div class="sidebar-note"><span class="status-dot"></span> 独立账号目录<p>文件保存在你的 NAS 上。<br>删除直接生效，不保留历史版本。</p></div></aside>
+    <div class="workspace"><header class="topbar"><span id="section-title">我的文件</span><div class="account-menu"><span id="account-name"></span><span id="account-role" class="tag"></span><button id="password-button" class="quiet" hidden>修改密码</button><button id="logout-button" class="quiet">退出</button></div></header>
+      <main>
+        <section id="files-panel"><div class="page-heading"><div><h1>我的文件</h1><p class="muted">只属于你的空间，随时存取。</p></div><div class="heading-actions"><button id="mkdir-button" class="secondary">＋ 新建文件夹</button><button id="upload-button" class="primary">↑ 上传文件</button><input id="upload-input" type="file" multiple hidden></div></div>
+          <div class="storage-card"><div class="file-toolbar"><nav id="breadcrumbs" aria-label="目录导航"></nav><div class="toolbar-actions"><input id="search-input" type="search" placeholder="筛选当前目录" aria-label="筛选当前目录"><button id="refresh-button" class="quiet" aria-label="刷新文件列表">↻ 刷新</button></div></div><div id="upload-progress" class="upload-progress" hidden><span id="upload-label"></span><progress id="progress-bar" max="100" value="0"></progress><button id="cancel-upload" class="quiet">取消上传</button></div><div class="table-scroll"><table class="file-table"><thead><tr><th>名称</th><th>大小</th><th>修改时间</th><th class="actions-heading">操作</th></tr></thead><tbody id="file-list"></tbody></table></div><div id="file-empty" class="empty-state" hidden><span class="empty-icon">▱</span><h3>这个文件夹还是空的</h3><p>上传文件，或新建一个文件夹。</p></div><footer class="table-footer"><span id="file-count">正在加载…</span><span id="access-label">独立存储目录</span></footer></div>
+          <div class="connection-card"><div><h3>也可以通过 WebDAV 连接</h3><p class="muted">使用相同账号密码。客户端根目录就是你的独立目录。</p></div><div class="connection-address"><code id="dav-address"></code><button id="copy-address" class="quiet">复制地址</button></div></div>
+        </section>
+        <section id="users-panel" hidden><div class="page-heading"><div><h1>账号管理</h1><p class="muted">每个账号一个目录。停用账号不会删除已有文件。</p></div><button id="add-user-button" class="primary">＋ 新建账号</button></div><div class="notice">管理员账号和密码由 Compose 环境变量管理。重置普通账号密码、调整权限或停用后，其原有网页登录会话立即失效。</div><div class="storage-card table-scroll"><table><thead><tr><th>账号 / 独立目录</th><th>权限</th><th>状态</th><th>操作</th></tr></thead><tbody id="user-list"></tbody></table></div></section>
+      </main><footer class="workspace-footer"><span>MapleStore</span><span>简单存取 · 私有部署</span></footer>
+    </div>
+  </div>
+  <dialog id="edit-dialog"><form id="edit-form"><div class="dialog-heading"><h2 id="dialog-title"></h2><button id="dialog-close" class="quiet" type="button" aria-label="关闭">✕</button></div><div id="dialog-fields"></div><p id="dialog-error" class="error" role="alert"></p><div class="dialog-actions"><button id="dialog-cancel" class="secondary" type="button">取消</button><button id="dialog-submit" class="primary" type="submit">确定</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

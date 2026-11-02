@@ -1,0 +1,57 @@
+name: maplestore
+
+services:
+  maplestore:
+    image: maplestore:local
+    build:
+      context: .
+      args:
+        GOPROXY: "${MAPLESTORE_GOPROXY:-https://proxy.golang.org,direct}"
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${MAPLESTORE_BIND_IP:-127.0.0.1}:${MAPLESTORE_PORT:-28111}:8080"
+    environment:
+      MAPLESTORE_ADDR: ":8080"
+      MAPLESTORE_DATA_DIR: /data
+      MAPLESTORE_CONFIG_DIR: /config
+      MAPLESTORE_ADMIN_USERNAME: "${MAPLESTORE_ADMIN_USERNAME:-admin}"
+      MAPLESTORE_ADMIN_PASSWORD: "${MAPLESTORE_ADMIN_PASSWORD:?请在 .env 中设置管理员密码，至少 12 字节}"
+      MAPLESTORE_SECURE_COOKIE: "${MAPLESTORE_SECURE_COOKIE:-false}"
+      MAPLESTORE_MAX_UPLOAD_BYTES: "${MAPLESTORE_MAX_UPLOAD_BYTES:-10737418240}"
+      PUID: "${MAPLESTORE_UID:-1000}"
+      PGID: "${MAPLESTORE_GID:-1000}"
+    volumes:
+      - type: bind
+        source: ./data
+        target: /data
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ./config
+        target: /config
+        bind:
+          create_host_path: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/maplestore", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    stop_grace_period: 35s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
