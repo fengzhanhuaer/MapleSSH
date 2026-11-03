@@ -3,3 +3,4 @@ MapleSSH/out/
 MapleSSH/config/
 MapleSSH/dist/
 *.user
+MapleSSH/build/

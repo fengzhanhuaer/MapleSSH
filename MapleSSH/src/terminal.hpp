@@ -13,6 +13,7 @@ public:
     explicit TerminalPanel(wxWindow* parent);
     ~TerminalPanel() override;
     void Feed(std::string_view text);
+    void FeedStatus(std::string_view text);
     void SetSender(std::function<void(std::string)> sender) { sender_ = std::move(sender); }
     void SetResize(std::function<void(int, int)> resize) { resize_ = std::move(resize); }
     void Copy();

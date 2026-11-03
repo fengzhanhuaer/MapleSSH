@@ -9,6 +9,7 @@
 #include <ctime>
 #include <memory>
 #include <stdexcept>
+#include <sstream>
 
 namespace maple {
 namespace {
@@ -49,6 +50,48 @@ struct InternetDeleter { void operator()(void* handle) const { if (handle) WinHt
 using InternetHandle = std::unique_ptr<void, InternetDeleter>;
 void CheckHttp(BOOL result) { if (!result) throw std::runtime_error("WebDAV 网络请求失败，请检查地址、证书或连接"); }
 void CheckCom(HRESULT result) { if (FAILED(result)) throw std::runtime_error("WebDAV 返回的 XML 无效"); }
+void ValidateLoginXml(const Bytes& content) {
+    using Microsoft::WRL::ComPtr;
+    ComPtr<IStream> stream(SHCreateMemStream(content.data(), static_cast<UINT>(content.size())));
+    if (!stream) throw std::runtime_error("无法分配 XML 缓冲区");
+    ComPtr<IXmlReader> reader;
+    CheckCom(CreateXmlReader(__uuidof(IXmlReader), reinterpret_cast<void**>(reader.GetAddressOf()), nullptr));
+    CheckCom(reader->SetProperty(XmlReaderProperty_DtdProcessing, DtdProcessing_Prohibit));
+    CheckCom(reader->SetProperty(XmlReaderProperty_MaxElementDepth, 32));
+    CheckCom(reader->SetInput(stream.Get()));
+    std::vector<std::wstring> elements;
+    bool multistatus = false, collection = false, accessible = false;
+    unsigned responses = 0;
+    std::wstring status;
+    XmlNodeType kind{};
+    HRESULT result = S_OK;
+    while ((result = reader->Read(&kind)) == S_OK) {
+        UINT depth = 0; CheckCom(reader->GetDepth(&depth));
+        if (kind == XmlNodeType_Element) {
+            const wchar_t* local = nullptr; const wchar_t* space = nullptr;
+            CheckCom(reader->GetLocalName(&local, nullptr)); CheckCom(reader->GetNamespaceUri(&space, nullptr));
+            elements.resize(depth); elements.emplace_back(std::wstring_view(space) == L"DAV:" ? local : L"");
+            if (depth == 0) multistatus = elements.back() == L"multistatus";
+            if (depth == 1 && elements.back() == L"response") ++responses;
+            if (elements == std::vector<std::wstring>{L"multistatus", L"response", L"propstat"}) { collection = false; status.clear(); }
+            if (elements == std::vector<std::wstring>{L"multistatus", L"response", L"propstat", L"prop", L"resourcetype", L"collection"}) collection = true;
+        } else if ((kind == XmlNodeType_Text || kind == XmlNodeType_CDATA) &&
+            elements == std::vector<std::wstring>{L"multistatus", L"response", L"propstat", L"status"}) {
+            const wchar_t* text = nullptr; UINT count = 0; CheckCom(reader->GetValue(&text, &count));
+            if (status.size() + count > 1024) throw std::runtime_error("WebDAV 返回状态过长");
+            status.append(text, count);
+        } else if (kind == XmlNodeType_EndElement) {
+            if (depth == 2 && elements.size() >= 3 && elements[0] == L"multistatus" && elements[1] == L"response" && elements[2] == L"propstat") {
+                std::wistringstream fields(status); std::wstring version; unsigned code = 0;
+                if (fields >> version >> code && version.starts_with(L"HTTP/") && code == 200 && collection) accessible = true;
+            }
+            elements.resize(depth);
+        }
+    }
+    CheckCom(result);
+    if (!multistatus || responses != 1) throw std::runtime_error("服务器未返回有效 WebDAV 目录，请检查 WebDAV 地址是否包含 /dav/");
+    if (!accessible) throw std::runtime_error("已连接 WebDAV，但无法访问该目录，请检查账号权限和地址");
+}
 }
 WebEndpoint ParseEndpoint(const WebDavSettings& settings) {
     if (settings.url.empty() || settings.url.size() > 8192 || settings.url.find_first_of("\r\n\t?#") != std::string::npos ||
@@ -76,6 +119,7 @@ WebEndpoint ParseEndpoint(const WebDavSettings& settings) {
     if (!endpoint.path.ends_with(L"/")) endpoint.path += L"/";
     if (endpoint.path.find(L"..") != std::wstring::npos || endpoint.path.find(L"%") != std::wstring::npos || endpoint.path.find(L"\\") != std::wstring::npos)
         throw std::runtime_error("WebDAV 基础路径不支持相对段或预编码字符");
+    endpoint.base_path = endpoint.path;
     endpoint.path += Segment(settings.directory) + L"/";
     return endpoint;
 }
@@ -98,14 +142,14 @@ std::string BackupNameFromHref(const WebEndpoint& endpoint, std::wstring_view hr
 }
 WebDavClient::WebDavClient(WebDavSettings settings) : settings_(std::move(settings)), endpoint_(ParseEndpoint(settings_)) {}
 WebDavClient::Response WebDavClient::Request(const wchar_t* method, std::wstring_view suffix, const Bytes& body,
-    const wchar_t* headers, std::size_t limit) {
+    const wchar_t* headers, std::size_t limit, bool use_base_path) {
     if (cancelled_) throw std::runtime_error("操作已取消");
     InternetHandle session(WinHttpOpen(L"MapleSSH/0.1", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0));
     if (!session) throw std::runtime_error("无法初始化 WinHTTP");
     CheckHttp(WinHttpSetTimeouts(session.get(), 10000, 10000, 10000, 10000));
     InternetHandle connection(WinHttpConnect(session.get(), endpoint_.host.c_str(), endpoint_.port, 0));
     if (!connection) throw std::runtime_error("无法建立 WebDAV 连接");
-    const auto path = endpoint_.path + std::wstring(suffix);
+    const auto path = (use_base_path ? endpoint_.base_path : endpoint_.path) + std::wstring(suffix);
     InternetHandle request(WinHttpOpenRequest(connection.get(), method, path.c_str(), nullptr, WINHTTP_NO_REFERER,
         WINHTTP_DEFAULT_ACCEPT_TYPES, endpoint_.secure ? WINHTTP_FLAG_SECURE : 0));
     if (!request) throw std::runtime_error("无法创建 WebDAV 请求");
@@ -137,9 +181,17 @@ WebDavClient::Response WebDavClient::Request(const wchar_t* method, std::wstring
     }
     if (cancelled_) throw std::runtime_error("操作已取消");
     if (status == 401) throw std::runtime_error("WebDAV 账号或密码错误（401）");
-    if (status == 403) throw std::runtime_error("WebDAV 拒绝访问，请检查账号写入权限（403）");
+    if (status == 403) throw std::runtime_error("WebDAV 拒绝访问，请检查账号权限（403）");
     if (status >= 300 && status < 400) throw std::runtime_error("WebDAV 返回重定向，请直接填写最终 HTTPS 地址");
     return response;
+}
+void WebDavClient::TestLogin() {
+    const std::string query = R"(<?xml version="1.0"?><d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>)";
+    const auto response = Request(L"PROPFIND", L"", Bytes(query.begin(), query.end()),
+        L"Depth: 0\r\nContent-Type: application/xml; charset=utf-8\r\n", 2 * 1024 * 1024, true);
+    if (response.status != 207)
+        throw std::runtime_error("登录测试失败，HTTP " + std::to_string(response.status) + "。请检查 WebDAV 地址，例如 https://nas.example/dav/，不要填写网页登录地址。");
+    ValidateLoginXml(response.body);
 }
 std::vector<std::string> WebDavClient::List() {
     const std::string query = "<?xml version=\"1.0\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:resourcetype/></d:prop></d:propfind>";

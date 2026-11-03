@@ -1,4 +1,5 @@
 #include "storage.hpp"
+#include <nlohmann/json.hpp>
 #include <windows.h>
 #include <fstream>
 #include <stdexcept>
@@ -42,14 +43,30 @@ std::filesystem::path ExecutableDirectory() {
 Storage::Storage(std::filesystem::path directory) : directory_(std::move(directory)) {
     std::filesystem::create_directories(directory_);
 }
-bool Storage::Exists() const { return std::filesystem::exists(directory_ / "vault.msv"); }
-Vault Storage::Load(std::string_view password) const {
-    return ParseVault(Decrypt(ReadBytes(directory_ / "vault.msv"), password, "vault"));
+bool Storage::Exists() const {
+    return std::filesystem::exists(directory_ / "vault.json") || std::filesystem::exists(directory_ / "vault.msv");
 }
-void Storage::Save(const Vault& vault, std::string_view password) const {
-    WriteAtomic(directory_ / "vault.msv", Encrypt(SerializeVault(vault), password, "vault"));
+Vault Storage::Load() const {
+    if (!std::filesystem::exists(directory_ / "vault.json") && std::filesystem::exists(directory_ / "vault.msv"))
+        throw std::runtime_error("检测到旧版加密配置 vault.msv，已保留原文件。请先使用旧版读取并迁移资料，再使用免主密码版本。");
+    const auto content = ReadBytes(directory_ / "vault.json");
+    return ParseVault(std::string(content.begin(), content.end()));
+}
+void Storage::Save(const Vault& vault) const {
+    if (!std::filesystem::exists(directory_ / "vault.json") && std::filesystem::exists(directory_ / "vault.msv"))
+        throw std::runtime_error("旧版加密配置尚未迁移，未创建或覆盖配置。");
+    const auto content = SerializeVault(vault);
+    if (std::filesystem::exists(directory_ / "vault.json")) {
+        const auto previous = ReadBytes(directory_ / "vault.json");
+        if (nlohmann::json::parse(previous).at("version") == 1) {
+            ParseVault(std::string(previous.begin(), previous.end()));
+            WriteAtomic(directory_ / ("vault.before-credentials." + RandomId() + ".json"), previous);
+        }
+    }
+    WriteAtomic(directory_ / "vault.json", Bytes(content.begin(), content.end()));
 }
 void Storage::SaveRecoveryCopy() const {
-    if (Exists()) WriteAtomic(directory_ / ("vault.before-restore." + RandomId() + ".msv"), ReadBytes(directory_ / "vault.msv"));
+    if (std::filesystem::exists(directory_ / "vault.json"))
+        WriteAtomic(directory_ / ("vault.before-restore." + RandomId() + ".json"), ReadBytes(directory_ / "vault.json"));
 }
 }

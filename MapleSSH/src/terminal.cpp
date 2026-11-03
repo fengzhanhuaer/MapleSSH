@@ -1,4 +1,5 @@
 #include "terminal.hpp"
+#include "terminal_cells.hpp"
 #include <wx/dcbuffer.h>
 #include <wx/clipbrd.h>
 #include <wx/dataobj.h>
@@ -101,13 +102,18 @@ void TerminalPanel::Feed(std::string_view text) {
     vterm_screen_flush_damage(screen_);
     Refresh(false);
 }
+void TerminalPanel::FeedStatus(std::string_view text) {
+    VTermPos cursor{};
+    vterm_state_get_cursorpos(vterm_obtain_state(terminal_), &cursor);
+    Feed(FormatTerminalStatus(text, cursor.col == 0));
+}
 void TerminalPanel::Recalculate() {
     SetFont(wxFont(wxFontInfo(font_size_).FaceName("Cascadia Mono").Family(wxFONTFAMILY_TELETYPE)));
     wxClientDC measure(this);
     measure.SetFont(GetFont());
     const auto extent = measure.GetTextExtent("M");
     cell_width_ = std::max(1, extent.x);
-    cell_height_ = std::max(1, extent.y + 2);
+    cell_height_ = std::max(1, extent.y);
     const auto size = GetClientSize();
     const auto new_rows = std::clamp(size.y / cell_height_, 2, 300);
     const auto new_columns = std::clamp(size.x / cell_width_, 2, 500);
@@ -150,7 +156,7 @@ void TerminalPanel::Paint(wxPaintEvent&) {
         const int absolute_row = static_cast<int>(history_.size()) - scroll_offset_ + row;
         for (int column = 0; column < columns_; ++column) {
             auto cell = Cell(absolute_row, column);
-            if (cell.width == 0 && cell.chars[0] == static_cast<std::uint32_t>(-1)) continue;
+            if (IsContinuation(cell)) continue;
             vterm_screen_convert_color_to_rgb(screen_, &cell.fg);
             vterm_screen_convert_color_to_rgb(screen_, &cell.bg);
             wxColour foreground(cell.fg.rgb.red, cell.fg.rgb.green, cell.fg.rgb.blue);
@@ -227,7 +233,7 @@ void TerminalPanel::Copy() {
         const auto right = row == last.first ? last.second : columns_ - 1;
         for (int column = left; column <= right; ++column) {
             const auto cell = Cell(row, column);
-            if (cell.chars[0] == static_cast<std::uint32_t>(-1)) continue;
+            if (IsContinuation(cell)) continue;
             line += CellText(cell);
         }
         line.Trim();

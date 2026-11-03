@@ -14,7 +14,7 @@
 namespace maple {
 class MainFrame : public wxFrame {
 public:
-    MainFrame(Storage storage, Vault vault, std::string master);
+    MainFrame(Storage storage, Vault vault);
     ~MainFrame() override;
 private:
     struct Tab { Session session; TerminalPanel* terminal; std::unique_ptr<SshClient> client; };
@@ -26,13 +26,17 @@ private:
         std::string name;
         Vault vault;
         std::vector<std::string> names;
-        std::vector<Session> restored;
+        Vault restored;
         std::shared_ptr<WebDavClient> client;
     };
     void BuildTree();
     std::string SelectedId() const;
     void Edit(bool create);
     void Delete();
+    void GroupMenu(wxTreeEvent& event);
+    void RenameSelectedGroup();
+    void ManageCredentials();
+    void ConnectTab(Tab& tab, const Session& session);
     void ConnectSelected();
     Tab* ActiveTab();
     void Settings();
@@ -47,7 +51,6 @@ private:
     void ShowError(const std::exception& error);
     Storage storage_;
     Vault vault_;
-    std::string master_;
     HostKeys keys_;
     wxTreeCtrl* tree_ = nullptr;
     wxAuiNotebook* notebook_ = nullptr;

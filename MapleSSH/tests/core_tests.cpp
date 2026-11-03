@@ -26,15 +26,19 @@ Session Example() {
     session.group = "实验室";
     session.host = "172.11.110.100";
     session.port = 35520;
-    session.username = "ies";
-    session.password = "ssh-password-sentinel";
+    session.credential_id = "test-credential";
     return session;
+}
+
+Credential ExampleCredential() {
+    Credential credential; credential.id = "test-credential"; credential.name = "测试凭据"; credential.username = "ies"; credential.password = "ssh-password-sentinel"; return credential;
 }
 
 int main(int argc, char** argv) {
     const std::map<std::string, std::function<void()>> tests{
         {"model_roundtrip", [] {
             Vault vault;
+            vault.credentials.push_back(ExampleCredential());
             vault.sessions.push_back(Example());
             vault.webdav = {"https://example.test/dav/", "webdav-user", "webdav-secret", "MapleSSH"};
             const auto restored = ParseVault(SerializeVault(vault));
@@ -44,32 +48,33 @@ int main(int argc, char** argv) {
         }},
         {"backup_whitelist", [] {
             Vault vault;
+            vault.credentials.push_back(ExampleCredential());
             auto session = Example();
-            session.auth = AuthMethod::PrivateKey;
-            session.private_key = "private-key-content-sentinel";
-            session.passphrase = "key-passphrase-sentinel";
+            vault.credentials.at(0).auth = AuthMethod::PrivateKey;
+            vault.credentials.at(0).private_key = "private-key-content-sentinel";
+            vault.credentials.at(0).passphrase = "key-passphrase-sentinel";
             vault.sessions.push_back(session);
             vault.webdav = {"https://example.test/dav/", "webdav-user-sentinel", "webdav-secret-sentinel", "MapleSSH"};
-            const auto payload = SerializeBackup(vault.sessions);
-            Require(payload.find(session.private_key) != std::string::npos, "private key content omitted");
-            Require(payload.find(session.passphrase) != std::string::npos, "key passphrase omitted");
+            const auto payload = SerializeBackup(vault);
+            Require(payload.find(vault.credentials.at(0).private_key) != std::string::npos, "private key content omitted");
+            Require(payload.find(vault.credentials.at(0).passphrase) != std::string::npos, "key passphrase omitted");
             Require(payload.find("webdav") == std::string::npos, "backup includes WebDAV settings");
             Require(payload.find("fingerprint") == std::string::npos, "backup includes fingerprint");
             Require(payload.find("known_hosts") == std::string::npos, "backup includes host trust");
-            Require(ParseBackup(payload).at(0).private_key == session.private_key, "backup not restorable");
+            Require(ParseBackup(payload).credentials.at(0).private_key == vault.credentials.at(0).private_key, "backup not restorable");
         }},
         {"invalid_models", [] {
             auto session = Example();
             auto invalid = session;
             invalid.host = "";
-            Rejects([&] { SerializeBackup({invalid}); });
+            Rejects([&] { ValidateSessions({invalid}); });
             invalid = session;
             invalid.port = 0;
-            Rejects([&] { SerializeBackup({invalid}); });
+            Rejects([&] { ValidateSessions({invalid}); });
             invalid = session;
             invalid.timeout_seconds = 0;
-            Rejects([&] { SerializeBackup({invalid}); });
-            Rejects([&] { SerializeBackup({session, session}); });
+            Rejects([&] { ValidateSessions({invalid}); });
+            Rejects([&] { ValidateSessions({session, session}); });
             Rejects([] { ParseBackup("{not-json}"); });
             Rejects([] { ParseBackup("{\"version\":99,\"sessions\":[]}"); });
             Rejects([] { ParseBackup("{\"version\":1,\"type\":\"maplessh-backup\",\"sessions\":[],\"known_hosts\":[]}"); });
@@ -99,6 +104,7 @@ int main(int argc, char** argv) {
             struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(path, ignored); } } cleanup{directory};
             Storage storage(directory);
             Vault vault;
+            vault.credentials.push_back(ExampleCredential());
             vault.sessions.push_back(Example());
             storage.Save(vault);
             Require(storage.Load().sessions.size() == 1, "saved vault unreadable");
@@ -123,10 +129,11 @@ int main(int argc, char** argv) {
             Storage source(directory / "source");
             Require(!source.Exists(), "new storage is not empty");
             Vault vault;
+            vault.credentials.push_back(ExampleCredential());
             vault.sessions.push_back(Example());
             vault.webdav = {"https://example.test/dav/", "webdav-user", "webdav-secret", "MapleSSH"};
             source.Save(vault);
-            Require(Storage(source.Directory()).Load().sessions.at(0).password == vault.sessions.at(0).password, "passwordless restart failed");
+            Require(Storage(source.Directory()).Load().credentials.at(0).password == vault.credentials.at(0).password, "passwordless restart failed");
             Storage destination(directory / "destination");
             std::filesystem::copy_file(source.Directory() / "vault.json", destination.Directory() / "vault.json");
             const auto restored = destination.Load();

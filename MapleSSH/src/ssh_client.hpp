@@ -17,7 +17,7 @@ struct SshEvent {
 };
 class SshClient {
 public:
-    explicit SshClient(Session session);
+    SshClient(Session session, Credential credential);
     ~SshClient();
     void Start(int rows = 24, int columns = 80);
     void Stop();
@@ -30,6 +30,7 @@ private:
     void Run(std::stop_token stop);
     void Post(SshEvent event);
     Session session_;
+    Credential credential_;
     std::jthread worker_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;

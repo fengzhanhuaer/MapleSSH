@@ -140,7 +140,7 @@ func run() error {
 							if accepted && request.Type == "shell" {
 								shellStarted = true
 								go func() {
-									io.WriteString(channel, "\x1b[32mfixture-ready\x1b[0m\r\n")
+									io.WriteString(channel, "\x1b[32mfixture-ready\x1b[0m\r\n中文终端测试：正在连接，正在认证，已连接。\r\n")
 									io.Copy(channel, channel)
 									channel.Close()
 								}()
@@ -155,6 +155,20 @@ func run() error {
 	}()
 	dav := &webdav.Handler{Prefix: "/dav", FileSystem: webdav.Dir(filepath.Join(*root, "dav")), LockSystem: webdav.NewMemLS()}
 	mux := http.NewServeMux()
+	var davWrites atomic.Int64
+	mux.HandleFunc("/dav-write-metrics", func(writer http.ResponseWriter, request *http.Request) { fmt.Fprint(writer, davWrites.Load()) })
+	mux.HandleFunc("/webpage/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html")
+		io.WriteString(writer, "<html><body>Login page</body></html>")
+	})
+	mux.HandleFunc("/fake-dav/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusMultiStatus)
+		io.WriteString(writer, "<html><body>Not WebDAV</body></html>")
+	})
+	mux.HandleFunc("/dav-denied/", func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusMultiStatus)
+		io.WriteString(writer, `<d:multistatus xmlns:d="DAV:"><d:response><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 403 Forbidden</d:status></d:propstat></d:response></d:multistatus>`)
+	})
 	mux.HandleFunc("/metrics", func(writer http.ResponseWriter, request *http.Request) { fmt.Fprint(writer, authentications.Load()) })
 	var redirected atomic.Int64
 	mux.HandleFunc("/redirect-metrics", func(writer http.ResponseWriter, request *http.Request) { fmt.Fprint(writer, redirected.Load()) })
@@ -189,6 +203,9 @@ func run() error {
 		corrupt.ServeHTTP(writer, request)
 	})
 	mux.HandleFunc("/dav/", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != "PROPFIND" && request.Method != "GET" && request.Method != "HEAD" && request.Method != "OPTIONS" {
+			davWrites.Add(1)
+		}
 		username, supplied, valid := request.BasicAuth()
 		if !valid || username != "fixture" || supplied != password {
 			writer.Header().Set("WWW-Authenticate", "Basic realm=maplessh-fixture")
@@ -203,7 +220,8 @@ func run() error {
 	}
 	defer listener.Close()
 	information := map[string]any{
-		"username": "fixture", "password": password,
+		"host_public_key": string(ssh.MarshalAuthorizedKey(hostSigner.PublicKey())),
+		"username":        "fixture", "password": password,
 		"ssh_port":              sshListener.Addr().(*net.TCPAddr).Port,
 		"dav_port":              listener.Addr().(*net.TCPAddr).Port,
 		"private_key":           string(pem.EncodeToMemory(plain)),

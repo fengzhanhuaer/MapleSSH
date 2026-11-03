@@ -127,7 +127,7 @@ int Retry(Connection& connection, std::stop_token stop, int timeout, const std::
     }
 }
 }
-SshClient::SshClient(Session session) : session_(std::move(session)) { Initialize(); }
+SshClient::SshClient(Session session, Credential credential) : session_(std::move(session)), credential_(std::move(credential)) { Initialize(); }
 SshClient::~SshClient() { Stop(); }
 void SshClient::Start(int rows, int columns) {
     Stop();
@@ -203,15 +203,15 @@ void SshClient::Run(std::stop_token stop) {
         }
         Post({SshEventKind::State, "正在认证"});
         int authentication = 0;
-        if (session_.auth == AuthMethod::Password) {
+        if (credential_.auth == AuthMethod::Password) {
             authentication = Retry(connection, stop, session_.timeout_seconds, [&] {
-                return libssh2_userauth_password_ex(connection.session, session_.username.data(), static_cast<unsigned int>(session_.username.size()),
-                    session_.password.data(), static_cast<unsigned int>(session_.password.size()), nullptr);
+                return libssh2_userauth_password_ex(connection.session, credential_.username.data(), static_cast<unsigned int>(credential_.username.size()),
+                    credential_.password.data(), static_cast<unsigned int>(credential_.password.size()), nullptr);
             });
         } else {
             authentication = Retry(connection, stop, session_.timeout_seconds, [&] {
-                return libssh2_userauth_publickey_frommemory(connection.session, session_.username.data(), session_.username.size(), nullptr, 0,
-                    session_.private_key.data(), session_.private_key.size(), session_.passphrase.c_str());
+                return libssh2_userauth_publickey_frommemory(connection.session, credential_.username.data(), credential_.username.size(), nullptr, 0,
+                    credential_.private_key.data(), credential_.private_key.size(), credential_.passphrase.c_str());
             });
         }
         if (authentication) throw std::runtime_error("SSH 认证失败，请检查用户名、密码或私钥格式");

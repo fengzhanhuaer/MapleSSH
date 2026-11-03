@@ -10,8 +10,8 @@ class Storage {
 public:
     explicit Storage(std::filesystem::path directory);
     bool Exists() const;
-    Vault Load(std::string_view password) const;
-    void Save(const Vault& vault, std::string_view password) const;
+    Vault Load() const;
+    void Save(const Vault& vault) const;
     void SaveRecoveryCopy() const;
     const std::filesystem::path& Directory() const { return directory_; }
 private:

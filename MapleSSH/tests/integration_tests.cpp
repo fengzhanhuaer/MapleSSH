@@ -56,14 +56,15 @@ void CheckSshClient(SshClient& client, bool trust, bool expect_authentication = 
         if (received.find("fixture-ready") != std::string::npos) ready = true;
         if (ready && !sent) { client.Send("maplessh-echo-check\n"); client.Resize(30, 100); sent = true; }
         if (received.find("maplessh-echo-check") != std::string::npos && received.find("fixture-resize:100x30") != std::string::npos) {
+            Require(received.find("中文终端测试：正在连接，正在认证，已连接。") != std::string::npos, "SSH UTF-8 output changed");
             Require(trust && expect_authentication, "rejected authentication established a shell"); client.Stop(); return;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     client.Stop(); throw std::runtime_error("SSH integration timeout");
 }
-void CheckSsh(Session session, bool trust, bool expect_authentication = true) {
-    SshClient client(std::move(session));
+void CheckSsh(Session session, Credential credential, bool trust, bool expect_authentication = true) {
+    SshClient client(std::move(session), std::move(credential));
     CheckSshClient(client, trust, expect_authentication);
 }
 int main(int argc, char** argv) {
@@ -71,61 +72,81 @@ int main(int argc, char** argv) {
         if (argc != 2) throw std::runtime_error("provide isolated fixture ready.json");
         const auto information = nlohmann::json::parse(ReadBytes(std::filesystem::path(argv[1])));
         Session session;
+        Credential credential; credential.id = "shared-integration"; credential.name = "fixture credential"; session.credential_id = credential.id;
         session.id = "integration"; session.name = "fixture"; session.host = "127.0.0.1";
-        session.port = information.at("ssh_port"); session.username = information.at("username"); session.password = information.at("password"); session.timeout_seconds = 5;
+        session.port = information.at("ssh_port"); credential.username = information.at("username"); credential.password = information.at("password"); session.timeout_seconds = 5;
         const auto metrics_port = information.value("metrics_port", information.at("dav_port").get<int>());
         const auto before = AuthenticationCount(metrics_port);
-        CheckSsh(session, false);
+        CheckSsh(session, credential, false);
         Require(AuthenticationCount(metrics_port) == before, "credentials reached an untrusted host");
         std::cout << "SSH host rejection before any authentication PASS\n";
-        CheckSsh(session, true);
+        CheckSsh(session, credential, true);
         std::cout << "SSH password PTY and echo PASS\n";
-        SshClient reusable(session);
+        auto shared_host = session; shared_host.id = "integration-shared"; shared_host.name = "second host";
+        CheckSsh(shared_host, credential, true);
+        std::cout << "SSH shared credential reused by another host PASS\n";
+        SshClient reusable(session, credential);
         CheckSshClient(reusable, true);
         CheckSshClient(reusable, true);
         std::cout << "SSH reconnect without stale events PASS\n";
-        auto invalid = session; invalid.password = "wrong-password";
-        CheckSsh(invalid, true, false);
+        auto invalid = credential; invalid.password = "wrong-password";
+        CheckSsh(session, invalid, true, false);
         std::cout << "SSH wrong password rejection PASS\n";
-        session.auth = AuthMethod::PrivateKey;
-        session.private_key = information.at("private_key");
-        CheckSsh(session, true);
+        credential.auth = AuthMethod::PrivateKey;
+        credential.private_key = information.at("private_key");
+        CheckSsh(session, credential, true);
         std::cout << "SSH OpenSSH Ed25519 private key PASS\n";
-        session.private_key = information.at("encrypted_private_key"); session.passphrase = information.at("passphrase");
-        CheckSsh(session, true);
+        credential.private_key = information.at("encrypted_private_key"); credential.passphrase = information.at("passphrase");
+        CheckSsh(session, credential, true);
         std::cout << "SSH encrypted Ed25519 private key PASS\n";
-        session.private_key = information.at("rsa_private_key"); session.passphrase.clear();
-        CheckSsh(session, true);
+        credential.private_key = information.at("rsa_private_key"); credential.passphrase.clear();
+        CheckSsh(session, credential, true);
         std::cout << "SSH RSA PEM private key PASS\n";
         WebDavSettings settings{"http://127.0.0.1:" + std::to_string(information.at("dav_port").get<int>()) + "/dav/", information.at("username"), information.at("password"), "MapleSSH"};
         WebDavClient client(settings);
+        const auto writes_before_login = AuthenticationCount(metrics_port, L"/dav-write-metrics");
+        client.TestLogin();
+        auto missing_directory = settings; missing_directory.directory = "not-created-yet";
+        WebDavClient(missing_directory).TestLogin();
+        Require(AuthenticationCount(metrics_port, L"/dav-write-metrics") == writes_before_login, "login test changed remote files");
         Require(client.List().empty(), "fixture backup directory not empty");
-        const auto payload = SerializeBackup({session});
-        const auto encrypted = Encrypt(payload, "integration-master-password", "backup");
+        Vault backup_vault; backup_vault.sessions = {session}; backup_vault.credentials = {credential};
+        const auto payload = SerializeBackup(backup_vault);
+        const Bytes backup(payload.begin(), payload.end());
         const auto name = WebDavClient::NewBackupName();
-        client.Upload(name, encrypted);
+        client.Upload(name, backup);
         const auto names = client.List();
         Require(names.size() == 1 && names.front() == name, "WebDAV backup not listed");
-        const auto restored = ParseBackup(Decrypt(client.Download(name), "integration-master-password", "backup"));
-        Require(restored.size() == 1 && restored.front().private_key == session.private_key, "WebDAV credentials round trip failed");
+        const auto downloaded = client.Download(name);
+        const auto restored = ParseBackup(std::string(downloaded.begin(), downloaded.end()));
+        Require(restored.sessions.size() == 1 && FindCredential(restored, restored.sessions.front().credential_id).private_key == credential.private_key, "WebDAV credentials round trip failed");
         bool rejected = false;
-        const auto different = Encrypt("different content", "integration-master-password", "backup");
+        const Bytes different{123, 125};
         try { client.Upload(name, different); } catch (const std::exception&) { rejected = true; }
         Require(rejected, "existing backup silently overwritten");
-        Require(client.Download(name) == encrypted, "collision changed the original backup");
+        Require(client.Download(name) == backup, "collision changed the original backup");
         settings.password = "wrong-password"; rejected = false;
+        RejectWith([&] { WebDavClient(settings).TestLogin(); }, "401");
         try { WebDavClient unauthorized(settings); unauthorized.List(); } catch (const std::exception&) { rejected = true; }
         Require(rejected, "WebDAV wrong password accepted");
-        std::cout << "WebDAV verified upload, list, restore, collision and 401 PASS\n";
+        std::cout << "WebDAV passwordless backup upload, list, restore, collision and 401 PASS\n";
         const auto fixture_url = "http://127.0.0.1:" + std::to_string(metrics_port);
         settings.password = information.at("password");
+        settings.url = fixture_url + "/webpage/";
+        RejectWith([&] { WebDavClient(settings).TestLogin(); }, "WebDAV 地址");
+        settings.url = fixture_url + "/fake-dav/";
+        RejectWith([&] { WebDavClient(settings).TestLogin(); }, "WebDAV");
+        settings.url = fixture_url + "/dav-denied/";
+        RejectWith([&] { WebDavClient(settings).TestLogin(); }, "访问");
         settings.url = fixture_url + "/forbidden/"; WebDavClient forbidden(settings);
+        RejectWith([&] { forbidden.TestLogin(); }, "403");
         RejectWith([&] { forbidden.List(); }, "403");
         settings.url = fixture_url + "/redirect/"; WebDavClient redirect(settings);
+        RejectWith([&] { redirect.TestLogin(); }, "重定向");
         RejectWith([&] { redirect.List(); }, "重定向");
         Require(AuthenticationCount(metrics_port, L"/redirect-metrics") == 0, "redirect followed with credentials");
         settings.url = fixture_url + "/corrupt/"; WebDavClient corrupt(settings);
-        RejectWith([&] { corrupt.Upload(WebDavClient::NewBackupName(), encrypted); }, "回读校验失败");
+        RejectWith([&] { corrupt.Upload(WebDavClient::NewBackupName(), backup); }, "回读校验失败");
         settings.url = fixture_url + "/slow/"; WebDavClient cancelled(settings);
         auto pending = std::async(std::launch::async, [&] { RejectWith([&] { cancelled.List(); }, "取消"); });
         std::this_thread::sleep_for(std::chrono::milliseconds(100)); cancelled.Cancel();
@@ -135,6 +156,7 @@ int main(int argc, char** argv) {
         RejectWith([&] { timeout.List(); }, "网络请求失败");
         Require(std::chrono::steady_clock::now() - started < std::chrono::seconds(14), "network timeout exceeded bound");
         std::cout << "WebDAV 403, redirect, corrupted readback, cancellation and timeout PASS\n";
+        std::cout << "WebDAV read-only login, missing backup directory, invalid endpoint and rejected credentials PASS\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }
 }

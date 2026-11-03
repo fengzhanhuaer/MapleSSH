@@ -1,9 +1,5 @@
 #include "main_frame.hpp"
-#include "dialogs.hpp"
-#include <wx/progdlg.h>
-#include <wx/utils.h>
 #include <windows.h>
-#include <future>
 #include <filesystem>
 
 namespace maple {
@@ -30,26 +26,9 @@ bool Application::OnInit() {
             nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
         if (lock_ == INVALID_HANDLE_VALUE) throw std::runtime_error("该配置已由另一 MapleSSH 实例打开，或程序目录不可写");
         Vault vault;
-        std::string master;
-        if (!smoke) {
-            const bool create = !storage.Exists();
-            for (;;) {
-                const auto supplied = AskMasterPassword(nullptr, create);
-                if (!supplied) return false;
-                master = *supplied;
-                try {
-                    auto future = std::async(std::launch::async, [&] {
-                        if (create) { Vault initial; storage.Save(initial, master); return initial; }
-                        return storage.Load(master);
-                    });
-                    wxProgressDialog progress("MapleSSH", create ? wxS("正在初始化加密配置…") : wxS("正在解锁配置…"), 100, nullptr, wxPD_APP_MODAL | wxPD_SMOOTH);
-                    while (future.wait_for(std::chrono::milliseconds(30)) != std::future_status::ready) progress.Pulse();
-                    vault = future.get();
-                    break;
-                } catch (const std::exception& error) { wxMessageBox(wxString::FromUTF8(error.what()), wxS("无法打开配置"), wxOK | wxICON_ERROR); }
-            }
-        }
-        auto* frame = new MainFrame(std::move(storage), std::move(vault), std::move(master));
+        if (storage.Exists()) vault = storage.Load();
+        else storage.Save(vault);
+        auto* frame = new MainFrame(std::move(storage), std::move(vault));
         SetTopWindow(frame); frame->Show();
         if (smoke) {
             smoke_timer_ = std::make_unique<wxTimer>(this);
