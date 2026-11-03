@@ -1,5 +1,6 @@
 #include "main_frame.hpp"
 #include "dialogs.hpp"
+#include "backup_labels.hpp"
 #include <wx/artprov.h>
 #include <wx/choicdlg.h>
 #include <wx/splitter.h>
@@ -269,8 +270,9 @@ void MainFrame::CompleteJob() {
         case JobKind::Backup: wxMessageBox(wxS("备份已上传并通过回读校验：\n") + wxString::FromUTF8(completed->name), wxS("备份成功"), wxOK | wxICON_INFORMATION, this); break;
         case JobKind::List: {
             if (completed->names.empty()) { wxMessageBox(wxS("该目录没有 MapleSSH 备份"), wxS("手动恢复"), wxOK | wxICON_INFORMATION, this); break; }
-            wxArrayString choices; for (const auto& name : completed->names) choices.Add(wxString::FromUTF8(name));
-            wxSingleChoiceDialog choice(this, wxS("选择要恢复的备份"), wxS("手动恢复"), choices);
+            wxArrayString choices; for (const auto& label : BackupLabels(completed->names)) choices.Add(wxString::FromUTF8(label));
+            wxSingleChoiceDialog choice(this, wxS("选择要恢复的备份（本机时间，最新在前）"), wxS("手动恢复"), choices);
+            choice.SetSelection(0);
             if (choice.ShowModal() == wxID_OK) StartDownload(completed->names.at(choice.GetSelection()));
             break;
         }
