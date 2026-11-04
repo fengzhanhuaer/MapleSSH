@@ -52,7 +52,7 @@ private:
     void RefreshQuickCommands();
     void EditQuickCommand(const std::string& id, const std::string& initial = {});
     void DeleteQuickCommand(const std::string& id);
-    void ExecuteCommands(Tab& tab, std::string_view text, bool confirm_multiline);
+    bool ExecuteCommands(Tab& tab, std::string_view text, bool confirm_multiline);
     Tab* ActiveTab();
     void Settings();
     void Backup();

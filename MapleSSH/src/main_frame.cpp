@@ -7,6 +7,7 @@
 #include <wx/splitter.h>
 #include <wx/aboutdlg.h>
 #include <wx/textdlg.h>
+#include <wx/dc.h>
 #include <algorithm>
 #include <map>
 
@@ -22,6 +23,22 @@ class GroupItem final : public wxTreeItemData {
 public:
     explicit GroupItem(std::string value) : name(std::move(value)) {}
     std::string name;
+};
+class CommandSplitter final : public wxSplitterWindow {
+public:
+    explicit CommandSplitter(wxWindow* parent)
+        : wxSplitterWindow(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxSP_LIVE_UPDATE | wxBORDER_NONE) {
+        SetBackgroundColour(wxColour(17, 22, 31));
+    }
+protected:
+    void DrawSash(wxDC& canvas) override {
+        if (!IsSplit()) return;
+        canvas.SetPen(*wxTRANSPARENT_PEN); canvas.SetBrush(wxBrush(GetBackgroundColour()));
+        canvas.DrawRectangle(0, GetSashPosition(), GetClientSize().x, GetSashSize());
+        canvas.SetPen(wxPen(wxColour(38, 46, 58)));
+        const auto position = GetSashPosition() + GetSashSize() / 2;
+        canvas.DrawLine(0, position, GetClientSize().x, position);
+    }
 };
 }
 MainFrame::MainFrame(Storage storage, Vault vault)
@@ -240,30 +257,32 @@ void MainFrame::ToggleSidebar() {
 }
 void MainFrame::BuildCommandInput(Tab& tab) {
     auto* target = &tab;
-    auto* splitter = new wxSplitterWindow(tab.page, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxSP_LIVE_UPDATE | wxSP_3D);
+    auto* splitter = new CommandSplitter(tab.page);
     tab.terminal = new TerminalPanel(splitter);
     auto* command_panel = new wxPanel(splitter);
+    command_panel->SetBackgroundColour(wxColour(17, 22, 31));
+    command_panel->SetForegroundColour(wxColour(221, 228, 238));
     auto* layout = new wxBoxSizer(wxVERTICAL);
     auto* shortcut_row = new wxBoxSizer(wxHORIZONTAL);
     shortcut_row->Add(new wxStaticText(command_panel, wxID_ANY, wxS("快捷命令")), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
-    tab.shortcuts = new wxScrolledWindow(command_panel, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(-1, 42)), wxHSCROLL | wxBORDER_NONE);
+    tab.shortcuts = new wxScrolledWindow(command_panel, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(-1, 34)), wxHSCROLL | wxBORDER_NONE);
+    tab.shortcuts->SetBackgroundColour(wxColour(17, 22, 31));
     tab.shortcuts->SetScrollRate(FromDIP(8), 0); tab.shortcuts->SetSizer(new wxBoxSizer(wxHORIZONTAL));
     shortcut_row->Add(tab.shortcuts, 1, wxEXPAND);
     auto* add = new wxButton(command_panel, wxID_ANY, wxS("添加…"));
     add->Bind(wxEVT_BUTTON, [this, target](wxCommandEvent&) { EditQuickCommand({}, target->command->GetValue().ToStdString(wxConvUTF8)); });
     add->Bind(wxEVT_UPDATE_UI, [this](wxUpdateUIEvent& event) { event.Enable(!job_); });
     shortcut_row->Add(add, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
-    layout->Add(shortcut_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
-    layout->Add(new wxStaticText(command_panel, wxID_ANY, wxS("命令输入")), 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
+    layout->Add(shortcut_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(4));
     auto* input_row = new wxBoxSizer(wxHORIZONTAL);
-    tab.command = new wxTextCtrl(command_panel, wxID_ANY, wxEmptyString, wxDefaultPosition, FromDIP(wxSize(-1, 80)), wxTE_MULTILINE | wxTE_DONTWRAP | wxTE_RICH2);
+    tab.command = new wxTextCtrl(command_panel, wxID_ANY, wxEmptyString, wxDefaultPosition, FromDIP(wxSize(-1, 80)), wxTE_MULTILINE | wxTE_DONTWRAP | wxTE_RICH2 | wxBORDER_NONE);
     tab.command->SetMinSize(FromDIP(wxSize(-1, 36)));
     tab.command->SetFont(wxFont(wxFontInfo(10).FaceName("Cascadia Mono").Family(wxFONTFAMILY_TELETYPE)));
     tab.command->SetBackgroundColour(wxColour(17, 22, 31));
     tab.command->SetForegroundColour(wxColour(221, 228, 238));
     tab.command->Bind(wxEVT_CHAR_HOOK, [this, target](wxKeyEvent& event) {
         if (event.ControlDown() && !event.AltDown() && !event.ShiftDown() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER)) {
-            ExecuteCommands(*target, target->command->GetValue().ToStdString(wxConvUTF8), false);
+            if (ExecuteCommands(*target, target->command->GetValue().ToStdString(wxConvUTF8), false)) { target->command->Clear(); target->command->SetFocus(); }
             return;
         }
         event.Skip();
@@ -271,7 +290,7 @@ void MainFrame::BuildCommandInput(Tab& tab) {
     tab.command->Bind(wxEVT_CHAR, [this, target](wxKeyEvent& event) {
         if (!event.AltDown() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER)) {
             if (event.ShiftDown()) target->command->WriteText("\n");
-            else ExecuteCommands(*target, target->command->GetValue().ToStdString(wxConvUTF8), false);
+            else if (ExecuteCommands(*target, target->command->GetValue().ToStdString(wxConvUTF8), false)) { target->command->Clear(); target->command->SetFocus(); }
             return;
         }
         event.Skip();
@@ -285,10 +304,10 @@ void MainFrame::BuildCommandInput(Tab& tab) {
     auto* clear = new wxButton(command_panel, wxID_ANY, wxS("清空"));
     clear->Bind(wxEVT_BUTTON, [target](wxCommandEvent&) { target->command->Clear(); target->command->SetFocus(); });
     actions->Add(clear, 0, wxEXPAND); input_row->Add(actions, 0, wxEXPAND);
-    layout->Add(input_row, 1, wxEXPAND | wxALL, FromDIP(8)); command_panel->SetSizer(layout);
+    layout->Add(input_row, 1, wxEXPAND | wxALL, FromDIP(4)); command_panel->SetSizer(layout);
     command_panel->SetMinSize(wxSize(-1, layout->GetMinSize().y));
     splitter->SetMinimumPaneSize(FromDIP(64)); splitter->SetSashGravity(1.0);
-    splitter->SplitHorizontally(tab.terminal, command_panel, -FromDIP(190));
+    splitter->SplitHorizontally(tab.terminal, command_panel, -FromDIP(150));
     auto* page_layout = new wxBoxSizer(wxVERTICAL); page_layout->Add(splitter, 1, wxEXPAND); tab.page->SetSizer(page_layout);
 }
 void MainFrame::RefreshQuickCommands() {
@@ -336,18 +355,19 @@ void MainFrame::DeleteQuickCommand(const std::string& id) {
     auto updated = vault_; std::erase_if(updated.quick_commands, [&](const auto& command) { return command.id == id; });
     Save(std::move(updated));
 }
-void MainFrame::ExecuteCommands(Tab& tab, std::string_view text, bool confirm_multiline) {
+bool MainFrame::ExecuteCommands(Tab& tab, std::string_view text, bool confirm_multiline) {
     try {
         if (!tab.client || !tab.client->Connected()) throw std::runtime_error("当前会话尚未连接，命令未发送");
         const auto commands = PrepareCommands(text);
         if (confirm_multiline && commands.lines > 1) {
             const auto message = wxString::Format(wxS("将向 %s（%s:%u）发送 %zu 行命令。\n命令可能立即执行，确认继续？"),
                 wxString::FromUTF8(tab.session.name), wxString::FromUTF8(tab.session.host), static_cast<unsigned int>(tab.session.port), commands.lines);
-            if (wxMessageBox(message, wxS("执行多行命令"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES) return;
+            if (wxMessageBox(message, wxS("执行多行命令"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES) return false;
         }
         if (!tab.client->Send(commands.input)) throw std::runtime_error("当前会话已断开，命令未发送");
         SetStatusText(wxString::FromUTF8(tab.session.name) + wxS("：命令已发送")); tab.terminal->SetFocus();
-    } catch (const std::exception& error) { ShowError(error); }
+        return true;
+    } catch (const std::exception& error) { ShowError(error); return false; }
 }
 void MainFrame::Settings() {
     if (job_) return; WebDavDialog dialog(this, vault_.webdav); if (dialog.ShowModal() != wxID_OK) return;
