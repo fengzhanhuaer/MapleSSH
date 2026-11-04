@@ -9,6 +9,7 @@
 #include <wx/aui/auibook.h>
 #include <wx/treectrl.h>
 #include <wx/scrolwin.h>
+#include <wx/splitter.h>
 #include <atomic>
 #include <memory>
 #include <thread>
@@ -38,6 +39,7 @@ private:
         std::shared_ptr<WebDavClient> client;
     };
     void BuildTree();
+    void ToggleSidebar();
     std::string SelectedId() const;
     void Edit(bool create);
     void Delete();
@@ -65,6 +67,8 @@ private:
     Storage storage_;
     Vault vault_;
     HostKeys keys_;
+    wxSplitterWindow* sidebar_splitter_ = nullptr;
+    int sidebar_width_ = 245;
     wxTreeCtrl* tree_ = nullptr;
     wxAuiNotebook* notebook_ = nullptr;
     wxTimer timer_;

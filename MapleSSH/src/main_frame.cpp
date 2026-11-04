@@ -12,7 +12,7 @@
 
 namespace maple {
 namespace {
-enum { IdNew = wxID_HIGHEST + 1, IdEdit, IdDelete, IdConnect, IdDisconnect, IdReconnect, IdSettings, IdBackup, IdRestore, IdCancel, IdLicenses, IdCredentials, IdRenameGroup };
+enum { IdNew = wxID_HIGHEST + 1, IdEdit, IdDelete, IdConnect, IdDisconnect, IdReconnect, IdSettings, IdBackup, IdRestore, IdCancel, IdLicenses, IdCredentials, IdRenameGroup, IdToggleSidebar };
 class SessionItem final : public wxTreeItemData {
 public:
     explicit SessionItem(std::string value) : id(std::move(value)) {}
@@ -39,7 +39,8 @@ MainFrame::MainFrame(Storage storage, Vault vault)
     backup->Append(IdSettings, wxS("WebDAV 设置…")); backup->AppendSeparator();
     backup->Append(IdBackup, wxS("手动备份…")); backup->Append(IdRestore, wxS("手动恢复…")); backup->Append(IdCancel, wxS("取消当前操作"));
     auto* help = new wxMenu; help->Append(wxID_ABOUT, wxS("关于 MapleSSH")); help->Append(IdLicenses, wxS("第三方许可证…"));
-    menus->Append(sessions, wxS("会话")); menus->Append(backup, wxS("备份")); menus->Append(help, wxS("帮助")); SetMenuBar(menus);
+    auto* view = new wxMenu; view->AppendCheckItem(IdToggleSidebar, wxS("会话栏\tCtrl+Shift+L")); view->Check(IdToggleSidebar, true);
+    menus->Append(sessions, wxS("会话")); menus->Append(backup, wxS("备份")); menus->Append(view, wxS("视图")); menus->Append(help, wxS("帮助")); SetMenuBar(menus);
     auto* toolbar = CreateToolBar(wxTB_FLAT | wxTB_TEXT);
     const wxSize iconSize(16, 16);
     toolbar->SetToolBitmapSize(toolbar->FromDIP(iconSize));
@@ -52,8 +53,11 @@ MainFrame::MainFrame(Storage storage, Vault vault)
     toolbar->AddTool(IdBackup, wxS("备份"), wxArtProvider::GetBitmapBundle(wxART_FILE_SAVE, wxART_TOOLBAR, iconSize));
     toolbar->AddTool(IdRestore, wxS("恢复"), wxArtProvider::GetBitmapBundle(wxART_UNDO, wxART_TOOLBAR, iconSize));
     toolbar->AddTool(IdSettings, wxS("设置"), wxArtProvider::GetBitmapBundle(wxART_EXECUTABLE_FILE, wxART_TOOLBAR, iconSize));
+    toolbar->AddSeparator();
+    toolbar->AddCheckTool(IdToggleSidebar, wxS("会话栏"), wxArtProvider::GetBitmapBundle(wxART_GO_BACK, wxART_TOOLBAR, iconSize), wxBitmapBundle(), wxS("收起或展开左侧会话栏（Ctrl+Shift+L）"));
     toolbar->Realize();
-    auto* splitter = new wxSplitterWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxSP_LIVE_UPDATE | wxSP_3D);
+    toolbar->ToggleTool(IdToggleSidebar, true);
+    auto* splitter = new wxSplitterWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxSP_LIVE_UPDATE | wxSP_3D); sidebar_splitter_ = splitter;
     tree_ = new wxTreeCtrl(splitter, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTR_HIDE_ROOT | wxTR_HAS_BUTTONS | wxTR_LINES_AT_ROOT | wxBORDER_NONE);
     notebook_ = new wxAuiNotebook(splitter, wxID_ANY, wxDefaultPosition, wxDefaultSize,
         wxAUI_NB_DEFAULT_STYLE | wxAUI_NB_CLOSE_ON_ACTIVE_TAB | wxAUI_NB_TAB_MOVE);
@@ -65,7 +69,7 @@ MainFrame::MainFrame(Storage storage, Vault vault)
         wxS("Windows 原生 SSH 工作台\n\n新增会话，然后双击连接。\nCtrl+Shift+C / V 复制粘贴，Ctrl+滚轮调整终端字体。\n\n配置在本机保存，无需主密码；WebDAV 只在手动操作时备份。\n主机指纹仅保存在本机，不进入备份。"));
     description->SetFont(wxFont(wxFontInfo(11))); welcome_layout->Add(description, 0, wxALIGN_CENTER);
     welcome_layout->AddStretchSpacer(); welcome->SetSizer(welcome_layout); notebook_->AddPage(welcome, wxS("开始"), true);
-    splitter->SetMinimumPaneSize(180); splitter->SplitVertically(tree_, notebook_, 245);
+    splitter->SetMinimumPaneSize(180); splitter->SetSashGravity(0.0); splitter->SplitVertically(tree_, notebook_, sidebar_width_);
     auto* layout = new wxBoxSizer(wxVERTICAL); layout->Add(splitter, 1, wxEXPAND); SetSizer(layout);
     CreateStatusBar(2); const int widths[]{-1, 220}; SetStatusWidths(2, widths);
     SetStatusText(wxS("就绪 · 配置保存在程序同目录"), 0); SetStatusText(wxS("手动 WebDAV 备份"), 1);
@@ -98,6 +102,7 @@ MainFrame::MainFrame(Storage storage, Vault vault)
     }, IdReconnect);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { ManageCredentials(); }, IdCredentials);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { RenameSelectedGroup(); }, IdRenameGroup);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { ToggleSidebar(); }, IdToggleSidebar);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Settings(); }, IdSettings);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Backup(); }, IdBackup);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Restore(); }, IdRestore);
@@ -107,7 +112,8 @@ MainFrame::MainFrame(Storage storage, Vault vault)
         wxMessageBox(wxS("MapleSSH 0.1.0\nwxWidgets · libssh2 · libvterm · OpenSSL\n\n单文件绿色 SSH 客户端\n第三方许可证已内嵌在程序资源 THIRD_PARTY_NOTICES 中。"), wxS("关于 MapleSSH"), wxOK | wxICON_INFORMATION, this);
     }, wxID_ABOUT);
     Bind(wxEVT_UPDATE_UI, [this](wxUpdateUIEvent& event) {
-        if (event.GetId() == IdCancel) event.Enable(job_ && job_->client);
+        if (event.GetId() == IdToggleSidebar) event.Check(sidebar_splitter_->IsSplit());
+        else if (event.GetId() == IdCancel) event.Enable(job_ && job_->client);
         else if ((event.GetId() >= IdNew && event.GetId() <= IdRestore) || event.GetId() == IdCredentials || event.GetId() == IdRenameGroup) event.Enable(!job_);
     });
     tree_->Bind(wxEVT_TREE_ITEM_ACTIVATED, [this](wxTreeEvent&) { ConnectSelected(); });
@@ -208,7 +214,6 @@ void MainFrame::ConnectSelected() {
         FindCredential(vault_, found->credential_id);
         auto tab = std::make_unique<Tab>();
         auto page = std::make_unique<wxPanel>(notebook_); tab->page = page.get();
-        tab->terminal = new TerminalPanel(tab->page);
         BuildCommandInput(*tab); ConnectTab(*tab, *found);
         notebook_->AddPage(tab->page, wxString::FromUTF8(found->name), true);
         page.release(); tabs_.push_back(std::move(tab)); RefreshQuickCommands(); tabs_.back()->terminal->SetFocus();
@@ -223,42 +228,68 @@ void MainFrame::ConnectTab(Tab& tab, const Session& session) {
     tab.terminal->SetResize([connection](int rows, int columns) { connection->Resize(rows, columns); });
     tab.client->Start(tab.terminal->Rows(), tab.terminal->Columns()); tab.terminal->SetFocus();
 }
+void MainFrame::ToggleSidebar() {
+    if (sidebar_splitter_->IsSplit()) {
+        sidebar_width_ = sidebar_splitter_->GetSashPosition(); sidebar_splitter_->Unsplit(tree_);
+        if (auto* tab = ActiveTab()) tab->terminal->SetFocus(); else notebook_->SetFocus();
+    } else {
+        tree_->Show(); sidebar_splitter_->SplitVertically(tree_, notebook_, sidebar_width_);
+    }
+    const bool visible = sidebar_splitter_->IsSplit();
+    GetMenuBar()->Check(IdToggleSidebar, visible); GetToolBar()->ToggleTool(IdToggleSidebar, visible); Layout();
+}
 void MainFrame::BuildCommandInput(Tab& tab) {
     auto* target = &tab;
+    auto* splitter = new wxSplitterWindow(tab.page, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxSP_LIVE_UPDATE | wxSP_3D);
+    tab.terminal = new TerminalPanel(splitter);
+    auto* command_panel = new wxPanel(splitter);
     auto* layout = new wxBoxSizer(wxVERTICAL);
-    layout->Add(tab.terminal, 1, wxEXPAND);
     auto* shortcut_row = new wxBoxSizer(wxHORIZONTAL);
-    shortcut_row->Add(new wxStaticText(tab.page, wxID_ANY, wxS("快捷命令")), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
-    tab.shortcuts = new wxScrolledWindow(tab.page, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(-1, 42)), wxHSCROLL | wxBORDER_NONE);
+    shortcut_row->Add(new wxStaticText(command_panel, wxID_ANY, wxS("快捷命令")), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+    tab.shortcuts = new wxScrolledWindow(command_panel, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(-1, 42)), wxHSCROLL | wxBORDER_NONE);
     tab.shortcuts->SetScrollRate(FromDIP(8), 0); tab.shortcuts->SetSizer(new wxBoxSizer(wxHORIZONTAL));
     shortcut_row->Add(tab.shortcuts, 1, wxEXPAND);
-    auto* add = new wxButton(tab.page, wxID_ANY, wxS("添加…"));
+    auto* add = new wxButton(command_panel, wxID_ANY, wxS("添加…"));
     add->Bind(wxEVT_BUTTON, [this, target](wxCommandEvent&) { EditQuickCommand({}, target->command->GetValue().ToStdString(wxConvUTF8)); });
     add->Bind(wxEVT_UPDATE_UI, [this](wxUpdateUIEvent& event) { event.Enable(!job_); });
     shortcut_row->Add(add, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
     layout->Add(shortcut_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
-    layout->Add(new wxStaticText(tab.page, wxID_ANY, wxS("命令输入：Enter 换行，Ctrl+Enter 执行；仅发送到本会话")), 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
+    layout->Add(new wxStaticText(command_panel, wxID_ANY, wxS("命令输入")), 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
     auto* input_row = new wxBoxSizer(wxHORIZONTAL);
-    tab.command = new wxTextCtrl(tab.page, wxID_ANY, wxEmptyString, wxDefaultPosition, FromDIP(wxSize(-1, 80)), wxTE_MULTILINE | wxTE_DONTWRAP | wxTE_RICH2);
-    tab.command->SetHint(wxS("输入或粘贴命令，点击执行后发送"));
+    tab.command = new wxTextCtrl(command_panel, wxID_ANY, wxEmptyString, wxDefaultPosition, FromDIP(wxSize(-1, 80)), wxTE_MULTILINE | wxTE_DONTWRAP | wxTE_RICH2);
+    tab.command->SetMinSize(FromDIP(wxSize(-1, 36)));
     tab.command->SetFont(wxFont(wxFontInfo(10).FaceName("Cascadia Mono").Family(wxFONTFAMILY_TELETYPE)));
+    tab.command->SetBackgroundColour(wxColour(17, 22, 31));
+    tab.command->SetForegroundColour(wxColour(221, 228, 238));
     tab.command->Bind(wxEVT_CHAR_HOOK, [this, target](wxKeyEvent& event) {
         if (event.ControlDown() && !event.AltDown() && !event.ShiftDown() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER)) {
-            ExecuteCommands(*target, target->command->GetValue().ToStdString(wxConvUTF8), true);
+            ExecuteCommands(*target, target->command->GetValue().ToStdString(wxConvUTF8), false);
+            return;
+        }
+        event.Skip();
+    });
+    tab.command->Bind(wxEVT_CHAR, [this, target](wxKeyEvent& event) {
+        if (!event.AltDown() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER)) {
+            if (event.ShiftDown()) target->command->WriteText("\n");
+            else ExecuteCommands(*target, target->command->GetValue().ToStdString(wxConvUTF8), false);
             return;
         }
         event.Skip();
     });
     input_row->Add(tab.command, 1, wxEXPAND | wxRIGHT, FromDIP(8));
     auto* actions = new wxBoxSizer(wxVERTICAL);
-    auto* execute = new wxButton(tab.page, wxID_ANY, wxS("执行"));
+    auto* execute = new wxButton(command_panel, wxID_ANY, wxS("执行"));
     execute->Bind(wxEVT_BUTTON, [this, target](wxCommandEvent&) { ExecuteCommands(*target, target->command->GetValue().ToStdString(wxConvUTF8), true); });
     execute->Bind(wxEVT_UPDATE_UI, [target](wxUpdateUIEvent& event) { event.Enable(target->client && target->client->Connected() && target->command->GetLastPosition() > 0); });
     actions->Add(execute, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
-    auto* clear = new wxButton(tab.page, wxID_ANY, wxS("清空"));
+    auto* clear = new wxButton(command_panel, wxID_ANY, wxS("清空"));
     clear->Bind(wxEVT_BUTTON, [target](wxCommandEvent&) { target->command->Clear(); target->command->SetFocus(); });
     actions->Add(clear, 0, wxEXPAND); input_row->Add(actions, 0, wxEXPAND);
-    layout->Add(input_row, 0, wxEXPAND | wxALL, FromDIP(8)); tab.page->SetSizer(layout);
+    layout->Add(input_row, 1, wxEXPAND | wxALL, FromDIP(8)); command_panel->SetSizer(layout);
+    command_panel->SetMinSize(wxSize(-1, layout->GetMinSize().y));
+    splitter->SetMinimumPaneSize(FromDIP(64)); splitter->SetSashGravity(1.0);
+    splitter->SplitHorizontally(tab.terminal, command_panel, -FromDIP(190));
+    auto* page_layout = new wxBoxSizer(wxVERTICAL); page_layout->Add(splitter, 1, wxEXPAND); tab.page->SetSizer(page_layout);
 }
 void MainFrame::RefreshQuickCommands() {
     for (auto& tab : tabs_) {
