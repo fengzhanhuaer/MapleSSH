@@ -1,3 +1,4 @@
 {
-    "cmake.sourceDirectory": "D:/100.Working/GithubWork/MapleSSH/MapleSSH"
+    "cmake.sourceDirectory": "${workspaceFolder}/MapleSSH",
+    "cmake.useCMakePresets": "always"
 }

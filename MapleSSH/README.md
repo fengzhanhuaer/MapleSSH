@@ -25,6 +25,7 @@ Windows x64 原生 SSH 客户端初版，界面使用 wxWidgets，终端使用 l
 - 快捷命令在所有会话共享，最多 200 条，保存在本机配置中并随手动备份、恢复。恢复和重连不会自动执行快捷命令。会话命令框草稿不持久化、不备份；Enter 或 Ctrl+Enter 成功提交发送后清空并保留框内焦点，未连接或发送失败时保留原文。点击“执行”仍保留原文，也可用“清空”移除。成功提交不代表远程执行完成。
 - 未连接或断线时不发送，也不会排队等待重连后自动执行。
 - 整个命令区与终端使用一致的深色背景、浅色文字，不显示多余标题，缩减上下留白，保留细分隔线。拖动终端与命令区之间的横向分隔线可调整高度，各会话独立；窗口变大时优先扩展终端，保留命令区高度。
+- 命令输入框不显示横向、纵向滚动条；长行按当前宽度显示折行，不额外写入换行或改变发送内容。多行内容仍可通过光标移动、鼠标滚轮查看，输入时自动跟随位置。
 - 工具栏“会话栏”、菜单“视图 → 会话栏”或 Ctrl+Shift+L 可收起、展开左侧列表；同次运行内展开时恢复收起前宽度，不断开连接、不清空命令。布局尺寸暂不跨重启保存。
 
 ## 文件与备份边界
@@ -50,6 +51,22 @@ Windows x64 原生 SSH 客户端初版，界面使用 wxWidgets，终端使用 l
 脚本按固定版本下载并校验源码 SHA-256，静态构建 wxWidgets 3.2.11、libssh2 1.11.1、OpenSSL 3.5.9、libvterm 0.3.3，使用 nlohmann-json 3.12.0。统一使用 MSVC /MT。也可用 -WxSource 指定完整的同版本 wxWidgets 源码，避免重复下载。网络下载中断可再次执行以续传，散列不匹配则停止。
 
 构建结束运行 CTest 和 PE 导入检查，输出 dist/MapleSSH.exe 与 SHA-256 文件；只需分发 EXE。帮助菜单可查看内嵌第三方许可证。
+
+### VS Code 直接构建
+
+用 VS Code 打开仓库根目录，安装 CMake Tools 扩展。本仓库已设置相对源码目录和 CMake Presets，无需再手动选择工具包。预设使用 Visual Studio 2026 x64 和 CMake 4.2+，复用 out/build，不影响已运行的 dist/ 程序。
+
+首次在新机器构建仍需先运行上面的 build.ps1，准备并校验依赖及静态 OpenSSL；预设不会自动下载安装依赖。默认 wxWidgets 路径与 prepare-deps.ps1 一致，已有构建缓存或自定义 MAPLE_WX_SOURCE 会保留。
+
+1. 执行命令面板中的 CMake: Select Configure Preset，选择 windows-x64。
+2. 执行 CMake: Select Build Preset，选择 release，然后点击 CMake 面板的“生成”。测试预设同样选择 release。
+3. 输出为 out/build/bin/Release/MapleSSH.exe；IDE 构建不自动复制到 dist/，以免覆盖正在使用的程序。
+
+如果面板仍显示“未选择工具包”，执行 Developer: Reload Window 后重新选择预设。也可在仓库根目录终端执行：
+
+    cmake --preset windows-x64 -S MapleSSH
+    cmake --build MapleSSH/out/build --config Release --parallel 8
+    ctest --test-dir MapleSSH/out/build -C Release --output-on-failure
 
 ## 验证
 

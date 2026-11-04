@@ -24,6 +24,17 @@ public:
     explicit GroupItem(std::string value) : name(std::move(value)) {}
     std::string name;
 };
+class CommandTextCtrl final : public wxTextCtrl {
+public:
+    explicit CommandTextCtrl(wxWindow* parent) {
+        Create(parent, wxID_ANY, wxEmptyString, wxDefaultPosition, parent->FromDIP(wxSize(-1, 80)), wxTE_MULTILINE | wxTE_RICH2 | wxTE_NO_VSCROLL | wxBORDER_NONE);
+    }
+protected:
+    WXDWORD MSWGetStyle(long style, WXDWORD* extended) const override {
+        const auto native = wxTextCtrl::MSWGetStyle(style, extended);
+        return (native & ~(WS_HSCROLL | WS_VSCROLL)) | ES_AUTOVSCROLL;
+    }
+};
 class CommandSplitter final : public wxSplitterWindow {
 public:
     explicit CommandSplitter(wxWindow* parent)
@@ -275,7 +286,7 @@ void MainFrame::BuildCommandInput(Tab& tab) {
     shortcut_row->Add(add, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
     layout->Add(shortcut_row, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(4));
     auto* input_row = new wxBoxSizer(wxHORIZONTAL);
-    tab.command = new wxTextCtrl(command_panel, wxID_ANY, wxEmptyString, wxDefaultPosition, FromDIP(wxSize(-1, 80)), wxTE_MULTILINE | wxTE_DONTWRAP | wxTE_RICH2 | wxBORDER_NONE);
+    tab.command = new CommandTextCtrl(command_panel);
     tab.command->SetMinSize(FromDIP(wxSize(-1, 36)));
     tab.command->SetFont(wxFont(wxFontInfo(10).FaceName("Cascadia Mono").Family(wxFONTFAMILY_TELETYPE)));
     tab.command->SetBackgroundColour(wxColour(17, 22, 31));
