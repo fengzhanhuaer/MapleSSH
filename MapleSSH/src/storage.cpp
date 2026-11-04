@@ -58,9 +58,11 @@ void Storage::Save(const Vault& vault) const {
     const auto content = SerializeVault(vault);
     if (std::filesystem::exists(directory_ / "vault.json")) {
         const auto previous = ReadBytes(directory_ / "vault.json");
-        if (nlohmann::json::parse(previous).at("version") == 1) {
+        const auto version = nlohmann::json::parse(previous).at("version");
+        if (version == 1 || version == 2) {
             ParseVault(std::string(previous.begin(), previous.end()));
-            WriteAtomic(directory_ / ("vault.before-credentials." + RandomId() + ".json"), previous);
+            const auto prefix = version == 1 ? "vault.before-credentials." : "vault.before-quick-commands.";
+            WriteAtomic(directory_ / (prefix + RandomId() + ".json"), previous);
         }
     }
     WriteAtomic(directory_ / "vault.json", Bytes(content.begin(), content.end()));

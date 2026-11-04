@@ -1,5 +1,6 @@
 #include "model.hpp"
 #include "crypto.hpp"
+#include "command_input.hpp"
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <set>
@@ -44,21 +45,32 @@ Json CatalogJson(const Vault& vault, std::string_view type) {
         sessions.push_back({{"id", session.id}, {"name", session.name}, {"group", session.group}, {"host", session.host},
             {"port", session.port}, {"credential_id", session.credential_id}, {"timeout_seconds", session.timeout_seconds}});
     for (const auto& credential : vault.credentials) credentials.push_back(CredentialJson(credential));
-    return {{"version", 2}, {"type", std::string(type)}, {"sessions", std::move(sessions)}, {"credentials", std::move(credentials)}};
+    auto commands = Json::array();
+    for (const auto& command : vault.quick_commands) commands.push_back({{"id", command.id}, {"name", command.name}, {"command", command.command}});
+    return {{"version", 3}, {"type", std::string(type)}, {"sessions", std::move(sessions)}, {"credentials", std::move(credentials)}, {"quick_commands", std::move(commands)}};
 }
 Json Parse(std::string_view text) {
     if (text.size() > MaxFileBytes) throw std::runtime_error("配置超过 32 MiB");
     return Json::parse(text);
 }
 Vault ReadCatalog(const Json& object, std::string_view type, bool local) {
-    if (!object.at("version").is_number_integer() || (object.at("version") != 1 && object.at("version") != 2) ||
+    if (!object.at("version").is_number_integer() || (object.at("version") != 1 && object.at("version") != 2 && object.at("version") != 3) ||
         object.at("type").get<std::string>() != type) throw std::runtime_error("不支持的配置格式或版本");
     const bool legacy = object.at("version") == 1;
     std::set<std::string> fields{"version", "type", "sessions"};
     if (!legacy) fields.insert("credentials");
+    if (object.at("version") == 3) fields.insert("quick_commands");
     if (local) fields.insert("webdav");
     ExactFields(object, fields);
     Vault vault;
+    if (object.at("version") == 3) {
+        const auto& commands = object.at("quick_commands");
+        if (!commands.is_array() || commands.size() > 200) throw std::runtime_error("快捷命令列表无效或超过 200 条");
+        for (const auto& entry : commands) {
+            ExactFields(entry, {"id", "name", "command"});
+            vault.quick_commands.push_back({entry.at("id").get<std::string>(), entry.at("name").get<std::string>(), entry.at("command").get<std::string>()});
+        }
+    }
     if (!legacy) {
         const auto& credentials = object.at("credentials");
         if (!credentials.is_array() || credentials.size() > 1000) throw std::runtime_error("凭据列表无效或超过 1000 条");
@@ -135,7 +147,20 @@ const Credential& FindCredential(const Vault& vault, std::string_view id) {
 }
 void ValidateCatalog(const Vault& vault) {
     ValidateSessions(vault.sessions); ValidateCredentials(vault.credentials);
+    ValidateQuickCommands(vault.quick_commands);
     for (const auto& session : vault.sessions) FindCredential(vault, session.credential_id);
+}
+void ValidateQuickCommands(const std::vector<QuickCommand>& commands) {
+    if (commands.size() > 200) throw std::runtime_error("最多支持 200 条快捷命令");
+    std::set<std::string> identifiers;
+    for (const auto& command : commands) {
+        CheckString(command.id, 128, true); CheckString(command.name, 128, true);
+        if (command.name.find_first_not_of(" \t\r\n") == std::string::npos) throw std::runtime_error("快捷命令名称不能为空");
+        if (std::any_of(command.name.begin(), command.name.end(), [](unsigned char character) { return character < 32 || character == 127; }))
+            throw std::runtime_error("快捷命令名称不能包含控制字符");
+        PrepareCommands(command.command);
+        if (!identifiers.insert(command.id).second) throw std::runtime_error("快捷命令标识重复");
+    }
 }
 void RemoveCredential(Vault& vault, std::string_view id) {
     const std::string identifier(id);

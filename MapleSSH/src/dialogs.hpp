@@ -7,6 +7,15 @@
 #include <future>
 #include <memory>
 namespace maple {
+class QuickCommandDialog : public wxDialog {
+public:
+    QuickCommandDialog(wxWindow* parent, QuickCommand initial);
+    QuickCommand Result() const { return result_; }
+private:
+    QuickCommand result_;
+    wxTextCtrl* name_;
+    wxTextCtrl* command_;
+};
 class CredentialDialog : public wxDialog {
 public:
     CredentialDialog(wxWindow* parent, Credential initial);

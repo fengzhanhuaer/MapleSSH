@@ -15,6 +15,27 @@ wxTextCtrl* Field(wxWindow* parent, wxFlexGridSizer* grid, const wxString& label
 }
 std::string Text(wxTextCtrl* control) { return control->GetValue().ToStdString(wxConvUTF8); }
 }
+QuickCommandDialog::QuickCommandDialog(wxWindow* parent, QuickCommand initial)
+    : wxDialog(parent, wxID_ANY, initial.id.empty() ? wxS("添加快捷命令") : wxS("编辑快捷命令"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER), result_(std::move(initial)) {
+    auto* layout = new wxBoxSizer(wxVERTICAL);
+    auto* grid = new wxFlexGridSizer(2, 8, 12); grid->AddGrowableCol(1);
+    name_ = Field(this, grid, wxS("按钮名称"), result_.name);
+    layout->Add(grid, 0, wxEXPAND | wxALL, 12);
+    layout->Add(new wxStaticText(this, wxID_ANY, wxS("命令内容（支持多行）")), 0, wxLEFT | wxRIGHT | wxBOTTOM, 12);
+    command_ = new wxTextCtrl(this, wxID_ANY, wxString::FromUTF8(result_.command), wxDefaultPosition, FromDIP(wxSize(520, 180)), wxTE_MULTILINE | wxTE_DONTWRAP | wxTE_RICH2);
+    layout->Add(command_, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 12);
+    layout->Add(new wxStaticText(this, wxID_ANY, wxS("点击快捷按钮会直接向当前会话发送全部命令。快捷命令在所有会话共享，并随手动备份恢复。")), 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 12);
+    layout->Add(CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, 12);
+    SetSizerAndFit(layout); SetMinSize(FromDIP(wxSize(600, 360)));
+    Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        try {
+            auto updated = result_; if (updated.id.empty()) updated.id = RandomId();
+            auto name = name_->GetValue(); name.Trim(true).Trim(false);
+            updated.name = name.ToStdString(wxConvUTF8); updated.command = Text(command_);
+            ValidateQuickCommands({updated}); result_ = std::move(updated); EndModal(wxID_OK);
+        } catch (const std::exception& error) { wxMessageBox(wxString::FromUTF8(error.what()), wxS("快捷命令无效"), wxOK | wxICON_WARNING, this); }
+    }, wxID_OK);
+}
 CredentialDialog::CredentialDialog(wxWindow* parent, Credential initial)
     : wxDialog(parent, wxID_ANY, initial.id.empty() ? wxS("新增凭据") : wxS("编辑凭据"), wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER), result_(std::move(initial)) {
     auto* layout = new wxBoxSizer(wxVERTICAL);

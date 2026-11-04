@@ -31,13 +31,20 @@ struct WebDavSettings {
     std::string password;
     std::string directory = "MapleSSH";
 };
+struct QuickCommand {
+    std::string id;
+    std::string name;
+    std::string command;
+};
 struct Vault {
     std::vector<Session> sessions;
     std::vector<Credential> credentials;
     WebDavSettings webdav;
+    std::vector<QuickCommand> quick_commands;
 };
 void ValidateSessions(const std::vector<Session>& sessions);
 void ValidateCredentials(const std::vector<Credential>& credentials);
+void ValidateQuickCommands(const std::vector<QuickCommand>& commands);
 void ValidateCatalog(const Vault& vault);
 const Credential& FindCredential(const Vault& vault, std::string_view id);
 void RemoveCredential(Vault& vault, std::string_view id);

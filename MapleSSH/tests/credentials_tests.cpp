@@ -21,7 +21,7 @@ int main() {
         Vault vault; vault.credentials = {credential}; vault.sessions = {first, second};
         const auto saved = SerializeVault(vault);
         const auto object = nlohmann::json::parse(saved);
-        Require(object.at("version") == 2 && object.at("credentials").size() == 1, "credentials not stored independently");
+        Require(object.at("version") == 3 && object.at("credentials").size() == 1, "credentials not stored independently");
         Require(!object.at("sessions").at(0).contains("password"), "session duplicated credential contents");
         auto reopened = ParseVault(saved);
         reopened.credentials.at(0).password = "updated-secret";

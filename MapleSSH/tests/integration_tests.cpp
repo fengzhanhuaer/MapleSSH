@@ -2,6 +2,7 @@
 #include "ssh_client.hpp"
 #include "webdav.hpp"
 #include "storage.hpp"
+#include "command_input.hpp"
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <iostream>
@@ -35,6 +36,7 @@ void RejectWith(const std::function<void()>& operation, std::string_view expecte
     throw std::runtime_error("expected operation rejection");
 }
 void CheckSshClient(SshClient& client, bool trust, bool expect_authentication = true) {
+    Require(!client.Send("not-connected-command\r"), "disconnected client queued a command");
     client.Start();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
     bool host_seen = false;
@@ -54,10 +56,14 @@ void CheckSshClient(SshClient& client, bool trust, bool expect_authentication = 
             }
         }
         if (received.find("fixture-ready") != std::string::npos) ready = true;
-        if (ready && !sent) { client.Send("maplessh-echo-check\n"); client.Resize(30, 100); sent = true; }
-        if (received.find("maplessh-echo-check") != std::string::npos && received.find("fixture-resize:100x30") != std::string::npos) {
+        if (ready && !sent) {
+            const auto commands = PrepareCommands("maplessh-echo-check\r\n中文命令检查\n\nmaplessh-shortcut-check");
+            Require(client.Send(commands.input), "connected client rejected commands"); client.Resize(30, 100); sent = true;
+        }
+        if (received.find("maplessh-echo-check\r中文命令检查\r\rmaplessh-shortcut-check\r") != std::string::npos && received.find("fixture-resize:100x30") != std::string::npos) {
             Require(received.find("中文终端测试：正在连接，正在认证，已连接。") != std::string::npos, "SSH UTF-8 output changed");
-            Require(trust && expect_authentication, "rejected authentication established a shell"); client.Stop(); return;
+            Require(trust && expect_authentication, "rejected authentication established a shell");
+            client.Stop(); Require(!client.Send("after-stop-command\r"), "stopped client queued a command"); return;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -81,7 +87,7 @@ int main(int argc, char** argv) {
         Require(AuthenticationCount(metrics_port) == before, "credentials reached an untrusted host");
         std::cout << "SSH host rejection before any authentication PASS\n";
         CheckSsh(session, credential, true);
-        std::cout << "SSH password PTY and echo PASS\n";
+        std::cout << "SSH password PTY, multiline command bytes, UTF-8 and disconnected input rejection PASS\n";
         auto shared_host = session; shared_host.id = "integration-shared"; shared_host.name = "second host";
         CheckSsh(shared_host, credential, true);
         std::cout << "SSH shared credential reused by another host PASS\n";
@@ -111,6 +117,7 @@ int main(int argc, char** argv) {
         Require(AuthenticationCount(metrics_port, L"/dav-write-metrics") == writes_before_login, "login test changed remote files");
         Require(client.List().empty(), "fixture backup directory not empty");
         Vault backup_vault; backup_vault.sessions = {session}; backup_vault.credentials = {credential};
+        backup_vault.quick_commands = {{"integration-shortcut", "目录", "pwd\r\nls -la"}};
         const auto payload = SerializeBackup(backup_vault);
         const Bytes backup(payload.begin(), payload.end());
         const auto name = WebDavClient::NewBackupName();
@@ -120,6 +127,7 @@ int main(int argc, char** argv) {
         const auto downloaded = client.Download(name);
         const auto restored = ParseBackup(std::string(downloaded.begin(), downloaded.end()));
         Require(restored.sessions.size() == 1 && FindCredential(restored, restored.sessions.front().credential_id).private_key == credential.private_key, "WebDAV credentials round trip failed");
+        Require(restored.quick_commands.size() == 1 && restored.quick_commands.front().command == backup_vault.quick_commands.front().command && restored.quick_commands.front().name == "目录", "WebDAV backup lost quick commands");
         bool rejected = false;
         const Bytes different{123, 125};
         try { client.Upload(name, different); } catch (const std::exception&) { rejected = true; }

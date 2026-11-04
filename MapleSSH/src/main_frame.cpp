@@ -1,6 +1,7 @@
 #include "main_frame.hpp"
 #include "dialogs.hpp"
 #include "backup_labels.hpp"
+#include "command_input.hpp"
 #include <wx/artprov.h>
 #include <wx/choicdlg.h>
 #include <wx/splitter.h>
@@ -113,7 +114,7 @@ MainFrame::MainFrame(Storage storage, Vault vault)
     tree_->Bind(wxEVT_TREE_ITEM_MENU, &MainFrame::GroupMenu, this);
     notebook_->Bind(wxEVT_AUINOTEBOOK_PAGE_CLOSE, [this](wxAuiNotebookEvent& event) {
         auto* page = notebook_->GetPage(event.GetSelection());
-        const auto found = std::find_if(tabs_.begin(), tabs_.end(), [page](const auto& tab) { return tab->terminal == page; });
+        const auto found = std::find_if(tabs_.begin(), tabs_.end(), [page](const auto& tab) { return tab->page == page; });
         if (found == tabs_.end()) { event.Veto(); return; }
         (*found)->terminal->SetSender({}); (*found)->terminal->SetResize({}); (*found)->client->Stop();
         tabs_.erase(found); event.Skip();
@@ -194,7 +195,7 @@ void MainFrame::Delete() {
 MainFrame::Tab* MainFrame::ActiveTab() {
     const auto selected = notebook_->GetSelection(); if (selected == wxNOT_FOUND) return nullptr;
     auto* page = notebook_->GetPage(selected);
-    for (auto& tab : tabs_) if (tab->terminal == page) return tab.get();
+    for (auto& tab : tabs_) if (tab->page == page) return tab.get();
     return nullptr;
 }
 void MainFrame::ConnectSelected() {
@@ -205,9 +206,12 @@ void MainFrame::ConnectSelected() {
         if (found == vault_.sessions.end()) return;
         if (tabs_.size() >= 16) throw std::runtime_error("首版最多同时打开 16 个终端标签");
         FindCredential(vault_, found->credential_id);
-        auto tab = std::make_unique<Tab>(); tab->terminal = new TerminalPanel(notebook_);
-        notebook_->AddPage(tab->terminal, wxString::FromUTF8(found->name), true);
-        ConnectTab(*tab, *found); tabs_.push_back(std::move(tab));
+        auto tab = std::make_unique<Tab>();
+        auto page = std::make_unique<wxPanel>(notebook_); tab->page = page.get();
+        tab->terminal = new TerminalPanel(tab->page);
+        BuildCommandInput(*tab); ConnectTab(*tab, *found);
+        notebook_->AddPage(tab->page, wxString::FromUTF8(found->name), true);
+        page.release(); tabs_.push_back(std::move(tab)); RefreshQuickCommands(); tabs_.back()->terminal->SetFocus();
     } catch (const std::exception& error) { ShowError(error); }
 }
 void MainFrame::ConnectTab(Tab& tab, const Session& session) {
@@ -218,6 +222,101 @@ void MainFrame::ConnectTab(Tab& tab, const Session& session) {
     tab.terminal->SetSender([this, connection](std::string text) { try { connection->Send(std::move(text)); } catch (const std::exception& error) { SetStatusText(wxString::FromUTF8(error.what())); } });
     tab.terminal->SetResize([connection](int rows, int columns) { connection->Resize(rows, columns); });
     tab.client->Start(tab.terminal->Rows(), tab.terminal->Columns()); tab.terminal->SetFocus();
+}
+void MainFrame::BuildCommandInput(Tab& tab) {
+    auto* target = &tab;
+    auto* layout = new wxBoxSizer(wxVERTICAL);
+    layout->Add(tab.terminal, 1, wxEXPAND);
+    auto* shortcut_row = new wxBoxSizer(wxHORIZONTAL);
+    shortcut_row->Add(new wxStaticText(tab.page, wxID_ANY, wxS("快捷命令")), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+    tab.shortcuts = new wxScrolledWindow(tab.page, wxID_ANY, wxDefaultPosition, FromDIP(wxSize(-1, 42)), wxHSCROLL | wxBORDER_NONE);
+    tab.shortcuts->SetScrollRate(FromDIP(8), 0); tab.shortcuts->SetSizer(new wxBoxSizer(wxHORIZONTAL));
+    shortcut_row->Add(tab.shortcuts, 1, wxEXPAND);
+    auto* add = new wxButton(tab.page, wxID_ANY, wxS("添加…"));
+    add->Bind(wxEVT_BUTTON, [this, target](wxCommandEvent&) { EditQuickCommand({}, target->command->GetValue().ToStdString(wxConvUTF8)); });
+    add->Bind(wxEVT_UPDATE_UI, [this](wxUpdateUIEvent& event) { event.Enable(!job_); });
+    shortcut_row->Add(add, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
+    layout->Add(shortcut_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
+    layout->Add(new wxStaticText(tab.page, wxID_ANY, wxS("命令输入：Enter 换行，Ctrl+Enter 执行；仅发送到本会话")), 0, wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
+    auto* input_row = new wxBoxSizer(wxHORIZONTAL);
+    tab.command = new wxTextCtrl(tab.page, wxID_ANY, wxEmptyString, wxDefaultPosition, FromDIP(wxSize(-1, 80)), wxTE_MULTILINE | wxTE_DONTWRAP | wxTE_RICH2);
+    tab.command->SetHint(wxS("输入或粘贴命令，点击执行后发送"));
+    tab.command->SetFont(wxFont(wxFontInfo(10).FaceName("Cascadia Mono").Family(wxFONTFAMILY_TELETYPE)));
+    tab.command->Bind(wxEVT_CHAR_HOOK, [this, target](wxKeyEvent& event) {
+        if (event.ControlDown() && !event.AltDown() && !event.ShiftDown() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER)) {
+            ExecuteCommands(*target, target->command->GetValue().ToStdString(wxConvUTF8), true);
+            return;
+        }
+        event.Skip();
+    });
+    input_row->Add(tab.command, 1, wxEXPAND | wxRIGHT, FromDIP(8));
+    auto* actions = new wxBoxSizer(wxVERTICAL);
+    auto* execute = new wxButton(tab.page, wxID_ANY, wxS("执行"));
+    execute->Bind(wxEVT_BUTTON, [this, target](wxCommandEvent&) { ExecuteCommands(*target, target->command->GetValue().ToStdString(wxConvUTF8), true); });
+    execute->Bind(wxEVT_UPDATE_UI, [target](wxUpdateUIEvent& event) { event.Enable(target->client && target->client->Connected() && target->command->GetLastPosition() > 0); });
+    actions->Add(execute, 0, wxEXPAND | wxBOTTOM, FromDIP(6));
+    auto* clear = new wxButton(tab.page, wxID_ANY, wxS("清空"));
+    clear->Bind(wxEVT_BUTTON, [target](wxCommandEvent&) { target->command->Clear(); target->command->SetFocus(); });
+    actions->Add(clear, 0, wxEXPAND); input_row->Add(actions, 0, wxEXPAND);
+    layout->Add(input_row, 0, wxEXPAND | wxALL, FromDIP(8)); tab.page->SetSizer(layout);
+}
+void MainFrame::RefreshQuickCommands() {
+    for (auto& tab : tabs_) {
+        auto* target = tab.get(); auto* layout = tab->shortcuts->GetSizer();
+        layout->Clear(true);
+        for (const auto& command : vault_.quick_commands) {
+            auto* button = new wxButton(tab->shortcuts, wxID_ANY, wxString::FromUTF8(command.name), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+            button->SetToolTip(wxString::FromUTF8(command.command) + wxS("\n点击直接发送；右键编辑或删除"));
+            button->Bind(wxEVT_BUTTON, [this, target, id = command.id](wxCommandEvent&) {
+                const auto found = std::find_if(vault_.quick_commands.begin(), vault_.quick_commands.end(), [&](const auto& entry) { return entry.id == id; });
+                if (found != vault_.quick_commands.end()) ExecuteCommands(*target, found->command, false);
+            });
+            button->Bind(wxEVT_CONTEXT_MENU, [this, button, id = command.id](wxContextMenuEvent&) {
+                wxMenu menu; menu.Append(wxID_EDIT, wxS("编辑快捷命令…")); menu.Append(wxID_DELETE, wxS("删除快捷命令…"));
+                menu.Enable(wxID_EDIT, !job_); menu.Enable(wxID_DELETE, !job_);
+                menu.Bind(wxEVT_MENU, [this, id](wxCommandEvent&) { EditQuickCommand(id); }, wxID_EDIT);
+                menu.Bind(wxEVT_MENU, [this, id](wxCommandEvent&) { DeleteQuickCommand(id); }, wxID_DELETE);
+                button->PopupMenu(&menu);
+            });
+            layout->Add(button, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+        }
+        tab->shortcuts->FitInside(); tab->shortcuts->Layout(); tab->page->Layout();
+    }
+}
+void MainFrame::EditQuickCommand(const std::string& id, const std::string& initial) {
+    if (job_) return;
+    QuickCommand command;
+    if (id.empty()) command.command = initial;
+    else {
+        const auto found = std::find_if(vault_.quick_commands.begin(), vault_.quick_commands.end(), [&](const auto& entry) { return entry.id == id; });
+        if (found == vault_.quick_commands.end()) return; command = *found;
+    }
+    QuickCommandDialog dialog(this, command); if (dialog.ShowModal() != wxID_OK) return;
+    auto updated = vault_; command = dialog.Result();
+    if (id.empty()) updated.quick_commands.push_back(command);
+    else for (auto& entry : updated.quick_commands) if (entry.id == id) entry = command;
+    try { ValidateCatalog(updated); Save(std::move(updated)); } catch (const std::exception& error) { ShowError(error); }
+}
+void MainFrame::DeleteQuickCommand(const std::string& id) {
+    if (job_) return;
+    const auto found = std::find_if(vault_.quick_commands.begin(), vault_.quick_commands.end(), [&](const auto& command) { return command.id == id; });
+    if (found == vault_.quick_commands.end()) return;
+    if (wxMessageBox(wxS("删除快捷命令“") + wxString::FromUTF8(found->name) + wxS("”？"), wxS("删除快捷命令"), wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) != wxYES) return;
+    auto updated = vault_; std::erase_if(updated.quick_commands, [&](const auto& command) { return command.id == id; });
+    Save(std::move(updated));
+}
+void MainFrame::ExecuteCommands(Tab& tab, std::string_view text, bool confirm_multiline) {
+    try {
+        if (!tab.client || !tab.client->Connected()) throw std::runtime_error("当前会话尚未连接，命令未发送");
+        const auto commands = PrepareCommands(text);
+        if (confirm_multiline && commands.lines > 1) {
+            const auto message = wxString::Format(wxS("将向 %s（%s:%u）发送 %zu 行命令。\n命令可能立即执行，确认继续？"),
+                wxString::FromUTF8(tab.session.name), wxString::FromUTF8(tab.session.host), static_cast<unsigned int>(tab.session.port), commands.lines);
+            if (wxMessageBox(message, wxS("执行多行命令"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES) return;
+        }
+        if (!tab.client->Send(commands.input)) throw std::runtime_error("当前会话已断开，命令未发送");
+        SetStatusText(wxString::FromUTF8(tab.session.name) + wxS("：命令已发送")); tab.terminal->SetFocus();
+    } catch (const std::exception& error) { ShowError(error); }
 }
 void MainFrame::Settings() {
     if (job_) return; WebDavDialog dialog(this, vault_.webdav); if (dialog.ShowModal() != wxID_OK) return;
@@ -241,7 +340,7 @@ void MainFrame::Backup() {
     try {
         auto job = std::make_shared<Job>(); job->kind = JobKind::Backup;
         job->client = std::make_shared<WebDavClient>(vault_.webdav); job->name = WebDavClient::NewBackupName();
-        if (wxMessageBox(wxS("将会话、SSH 密码和私钥上传到所设置的 WebDAV。\n不包含本机指纹或 WebDAV 登录资料。确认备份？"), wxS("手动备份"), wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) != wxYES) return;
+        if (wxMessageBox(wxS("将会话、SSH 密码、私钥和快捷命令上传到所设置的 WebDAV。\n不包含本机指纹或 WebDAV 登录资料。确认备份？"), wxS("手动备份"), wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) != wxYES) return;
         auto catalog = vault_; catalog.webdav = {};
         Launch(job, [catalog = std::move(catalog)](Job& state) { const auto content = SerializeBackup(catalog); state.client->Upload(state.name, Bytes(content.begin(), content.end())); });
     } catch (const std::exception& error) { ShowError(error); }
@@ -266,7 +365,7 @@ void MainFrame::CompleteJob() {
     auto completed = std::move(job_); SetStatusText(wxS("就绪"));
     if (!completed->error.empty()) { std::runtime_error error(completed->error); ShowError(error); return; }
     switch (completed->kind) {
-        case JobKind::Save: vault_ = std::move(completed->vault); BuildTree(); SetStatusText(wxS("配置已保存")); break;
+        case JobKind::Save: vault_ = std::move(completed->vault); BuildTree(); RefreshQuickCommands(); SetStatusText(wxS("配置已保存")); break;
         case JobKind::Backup: wxMessageBox(wxS("备份已上传并通过回读校验：\n") + wxString::FromUTF8(completed->name), wxS("备份成功"), wxOK | wxICON_INFORMATION, this); break;
         case JobKind::List: {
             if (completed->names.empty()) { wxMessageBox(wxS("该目录没有 MapleSSH 备份"), wxS("手动恢复"), wxOK | wxICON_INFORMATION, this); break; }
@@ -277,9 +376,9 @@ void MainFrame::CompleteJob() {
             break;
         }
         case JobKind::Download: {
-            const auto message = wxString::Format(wxS("备份含 %zu 条会话、%zu 条凭据。\n将替换当前会话和凭据列表，并先保留本机副本。\n本机指纹、WebDAV 设置和已打开连接保持不变。继续？"), completed->restored.sessions.size(), completed->restored.credentials.size());
+            const auto message = wxString::Format(wxS("备份含 %zu 条会话、%zu 条凭据、%zu 条快捷命令。\n将替换当前会话、凭据和快捷命令列表，并先保留本机副本。\n本机指纹、WebDAV 设置和已打开连接保持不变。继续？"), completed->restored.sessions.size(), completed->restored.credentials.size(), completed->restored.quick_commands.size());
             if (wxMessageBox(message, wxS("确认恢复"), wxYES_NO | wxNO_DEFAULT | wxICON_WARNING, this) != wxYES) break;
-            auto updated = vault_; updated.sessions = std::move(completed->restored.sessions); updated.credentials = std::move(completed->restored.credentials); Save(std::move(updated), true); break;
+            auto updated = vault_; updated.sessions = std::move(completed->restored.sessions); updated.credentials = std::move(completed->restored.credentials); updated.quick_commands = std::move(completed->restored.quick_commands); Save(std::move(updated), true); break;
         }
     }
 }
@@ -291,7 +390,7 @@ void MainFrame::Poll(wxTimerEvent&) {
         for (const auto& event : tab->client->Drain()) {
             if (event.kind == SshEventKind::Output) tab->terminal->Feed(event.text);
             else if (event.kind == SshEventKind::State) {
-                const auto page = notebook_->GetPageIndex(tab->terminal);
+                const auto page = notebook_->GetPageIndex(tab->page);
                 if (page != wxNOT_FOUND) notebook_->SetPageText(page, wxString::FromUTF8(tab->session.name + " · " + event.text));
                 tab->terminal->FeedStatus(event.text);
                 SetStatusText(wxString::FromUTF8(tab->session.name + "：" + event.text));

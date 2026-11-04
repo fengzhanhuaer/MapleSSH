@@ -138,11 +138,12 @@ void SshClient::Stop() {
     if (worker_.joinable()) { worker_.request_stop(); condition_.notify_all(); worker_.join(); }
     connected_ = false;
 }
-void SshClient::Send(std::string text) {
-    if (!connected_) return;
+bool SshClient::Send(std::string text) {
     const std::lock_guard lock(mutex_);
+    if (!connected_) return false;
     if (input_.size() + text.size() > 1024 * 1024) throw std::runtime_error("待发送输入过多，请稍后重试");
     input_ += text;
+    return true;
 }
 void SshClient::Resize(int rows, int columns) {
     const std::lock_guard lock(mutex_);

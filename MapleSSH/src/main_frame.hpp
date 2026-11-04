@@ -8,6 +8,7 @@
 #include <wx/wx.h>
 #include <wx/aui/auibook.h>
 #include <wx/treectrl.h>
+#include <wx/scrolwin.h>
 #include <atomic>
 #include <memory>
 #include <thread>
@@ -17,7 +18,14 @@ public:
     MainFrame(Storage storage, Vault vault);
     ~MainFrame() override;
 private:
-    struct Tab { Session session; TerminalPanel* terminal; std::unique_ptr<SshClient> client; };
+    struct Tab {
+        Session session;
+        wxPanel* page = nullptr;
+        TerminalPanel* terminal = nullptr;
+        wxTextCtrl* command = nullptr;
+        wxScrolledWindow* shortcuts = nullptr;
+        std::unique_ptr<SshClient> client;
+    };
     enum class JobKind { Save, Backup, List, Download };
     struct Job {
         JobKind kind;
@@ -38,6 +46,11 @@ private:
     void ManageCredentials();
     void ConnectTab(Tab& tab, const Session& session);
     void ConnectSelected();
+    void BuildCommandInput(Tab& tab);
+    void RefreshQuickCommands();
+    void EditQuickCommand(const std::string& id, const std::string& initial = {});
+    void DeleteQuickCommand(const std::string& id);
+    void ExecuteCommands(Tab& tab, std::string_view text, bool confirm_multiline);
     Tab* ActiveTab();
     void Settings();
     void Backup();

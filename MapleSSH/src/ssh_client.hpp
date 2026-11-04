@@ -21,7 +21,7 @@ public:
     ~SshClient();
     void Start(int rows = 24, int columns = 80);
     void Stop();
-    void Send(std::string text);
+    bool Send(std::string text);
     void Resize(int rows, int columns);
     std::vector<SshEvent> Drain();
     void ConfirmHost(bool accepted);
