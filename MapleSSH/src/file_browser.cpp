@@ -30,7 +30,7 @@ FileBrowserPanel::FileBrowserPanel(wxWindow* parent, std::function<std::shared_p
     add(wxS("刷新"), [this] { Browse(directory_); });
     add(wxS("上传…"), [this] { Upload(); });
     add(wxS("下载…"), [this] { Download(); });
-    add(wxS("终端进入此目录"), [this] { EnterDirectory(); });
+    add(wxS("cd 跳转"), [this] { EnterDirectory(directory_); });
     layout->Add(buttons, 0, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(4));
     list_ = new wxListCtrl(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxLC_REPORT | wxLC_SINGLE_SEL | wxBORDER_NONE);
     list_->SetBackgroundColour(background); list_->SetTextColour(foreground);
@@ -38,8 +38,9 @@ FileBrowserPanel::FileBrowserPanel(wxWindow* parent, std::function<std::shared_p
     list_->InsertColumn(1, wxS("类型"), wxLIST_FORMAT_LEFT, FromDIP(48));
     list_->InsertColumn(2, wxS("字节"), wxLIST_FORMAT_RIGHT, FromDIP(85));
     list_->Bind(wxEVT_LIST_ITEM_ACTIVATED, [this](wxListEvent&) {
-        if (const auto* entry = Selected()) { if (entry->directory) Browse(JoinRemotePath(directory_, entry->name)); else if (entry->regular) Download(); }
+        if (const auto* entry = Selected()) { if (entry->directory) Browse(entry->name == ".." ? RemoteParent(directory_) : JoinRemotePath(directory_, entry->name)); else if (entry->regular) Download(); }
     });
+    list_->Bind(wxEVT_CONTEXT_MENU, &FileBrowserPanel::ContextMenu, this);
     layout->Add(list_, 1, wxEXPAND | wxLEFT | wxRIGHT, FromDIP(4)); actions_.push_back(list_);
     auto* progress = new wxBoxSizer(wxHORIZONTAL);
     progress_ = new wxGauge(this, wxID_ANY, 100); progress->Add(progress_, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
@@ -60,7 +61,7 @@ std::shared_ptr<SftpClient> FileBrowserPanel::ActiveFiles() const {
     return current;
 }
 void FileBrowserPanel::Browse(std::string path) {
-    try { if (!connected_) throw std::runtime_error("请先连接 SSH"); Watch(ActiveFiles()->Submit(FileOperation::List, std::move(path))); }
+    try { if (!connected_) throw std::runtime_error("请先连接 SSH"); Watch(ActiveFiles()->Submit(FileOperation::List, RemoteBrowsePath(directory_, path))); }
     catch (const std::exception& error) { path_->ChangeValue(wxString::FromUTF8(directory_)); Error(error); }
 }
 const RemoteFile* FileBrowserPanel::Selected() const {
@@ -97,12 +98,35 @@ void FileBrowserPanel::Download() {
         Watch(ActiveFiles()->Submit(FileOperation::Download, remote, local, std::filesystem::exists(local)));
     } catch (const std::exception& error) { Error(error); }
 }
-void FileBrowserPanel::EnterDirectory() {
+void FileBrowserPanel::ContextMenu(wxContextMenuEvent& event) {
+    try {
+        if (event.GetPosition() != wxDefaultPosition) {
+            int flags = 0;
+            const auto row = list_->HitTest(list_->ScreenToClient(event.GetPosition()), flags);
+            const auto previous = list_->GetNextItem(-1, wxLIST_NEXT_ALL, wxLIST_STATE_SELECTED);
+            if (previous >= 0) list_->SetItemState(previous, 0, wxLIST_STATE_SELECTED | wxLIST_STATE_FOCUSED);
+            if (row >= 0) list_->SetItemState(row, wxLIST_STATE_SELECTED | wxLIST_STATE_FOCUSED, wxLIST_STATE_SELECTED | wxLIST_STATE_FOCUSED);
+        }
+        const auto* entry = Selected();
+        const auto directory = entry && entry->directory ? (entry->name == ".." ? RemoteParent(directory_) : JoinRemotePath(directory_, entry->name)) : directory_;
+        wxMenu menu;
+        menu.Append(wxID_OPEN, wxS("上传到当前目录…"));
+        menu.Append(wxID_SAVEAS, wxS("下载所选文件…"));
+        menu.AppendSeparator();
+        menu.Append(wxID_FORWARD, entry && entry->directory ? wxS("cd 到所选目录") : wxS("cd 到当前目录"));
+        menu.Enable(wxID_OPEN, connected_ && watching_.empty());
+        menu.Enable(wxID_SAVEAS, connected_ && watching_.empty() && entry && entry->regular);
+        menu.Enable(wxID_FORWARD, connected_ && directory.starts_with('/'));
+        menu.Bind(wxEVT_MENU, [this](wxCommandEvent&) { Upload(); }, wxID_OPEN);
+        menu.Bind(wxEVT_MENU, [this](wxCommandEvent&) { Download(); }, wxID_SAVEAS);
+        menu.Bind(wxEVT_MENU, [this, directory](wxCommandEvent&) { EnterDirectory(directory); }, wxID_FORWARD);
+        list_->PopupMenu(&menu);
+    } catch (const std::exception& error) { Error(error); }
+}
+void FileBrowserPanel::EnterDirectory(std::string directory) {
     if (!connected_) return;
     try {
-        const auto command = TerminalCdCommand(directory_);
-        if (wxMessageBox(wxS("向当前交互终端发送 cd 命令：\n") + wxString::FromUTF8(directory_) + wxS("\n\n仅适用于空闲的 POSIX shell。请确认终端不在编辑器、密码提示或其他前台程序中。"),
-            wxS("终端进入此目录"), wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) != wxYES) return;
+        const auto command = TerminalCdCommand(directory);
         ActiveFiles();
         if (!sender_(command)) throw std::runtime_error("SSH 已断开，目录命令未发送");
         status_->SetLabel(wxS("cd 已发送，请以终端输出为准"));
@@ -110,6 +134,7 @@ void FileBrowserPanel::EnterDirectory() {
 }
 void FileBrowserPanel::ShowFiles(const FileSnapshot& snapshot) {
     directory_ = snapshot.remote_path; entries_ = snapshot.entries; path_->ChangeValue(wxString::FromUTF8(directory_));
+    if (directory_ != "/") entries_.insert(entries_.begin(), RemoteFile{"..", true});
     list_->Freeze(); list_->DeleteAllItems();
     for (const auto& entry : entries_) {
         const auto row = list_->InsertItem(list_->GetItemCount(), wxString::FromUTF8(entry.name));
@@ -117,7 +142,7 @@ void FileBrowserPanel::ShowFiles(const FileSnapshot& snapshot) {
         if (entry.regular) list_->SetItem(row, 2, wxString::Format("%llu", static_cast<unsigned long long>(entry.size)));
     }
     list_->Thaw();
-    status_->SetLabel(wxString::Format(wxS("%zu 项%s"), entries_.size(), snapshot.truncated ? wxS("（列表已截断或存在不支持的文件名）") : wxS("")));
+    status_->SetLabel(wxString::Format(wxS("%zu 项%s"), snapshot.entries.size(), snapshot.truncated ? wxS("（列表已截断或存在不支持的文件名）") : wxS("")));
 }
 void FileBrowserPanel::Poll(bool connected) {
     connected_ = connected;

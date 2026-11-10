@@ -14,6 +14,10 @@ int main() {
         Require(JoinRemotePath("/", "hello") == "/hello", "root join failed");
         Require(RemoteParent("/home/user/") == "/home", "parent failed");
         Require(RemoteParent("/") == "/", "root parent failed");
+        Require(RemoteBrowsePath("/home/user/logs", "..") == "/home/user/logs/..", "relative parent resolved against login directory");
+        Require(RemoteBrowsePath("/home/user", "logs") == "/home/user/logs", "relative directory navigation failed");
+        Require(RemoteBrowsePath("/home/user", "/tmp") == "/tmp", "absolute navigation changed");
+        Require(RemoteBrowsePath(".", ".") == ".", "initial login directory changed");
         Require(TerminalCdCommand("/home/a'b;$(id)") == "cd -- '/home/a'\"'\"'b;$(id)'\r", "shell quoting failed");
         Rejects([] { TerminalCdCommand("relative"); });
         Rejects([] { ValidateRemotePath("/home\nrm"); });

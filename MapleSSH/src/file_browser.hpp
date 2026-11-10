@@ -14,7 +14,8 @@ private:
     void Browse(std::string path);
     void Upload();
     void Download();
-    void EnterDirectory();
+    void EnterDirectory(std::string directory);
+    void ContextMenu(wxContextMenuEvent& event);
     void Watch(const std::string& id);
     void ShowFiles(const FileSnapshot& snapshot);
     std::shared_ptr<SftpClient> ActiveFiles() const;

@@ -44,4 +44,11 @@ std::string TerminalCdCommand(std::string_view directory) {
     for (const auto character : directory) command += character == '\'' ? "'\"'\"'" : std::string(1, character);
     return command + "'\r";
 }
+std::string RemoteBrowsePath(std::string_view directory, std::string_view requested) {
+    ValidateRemotePath(directory); ValidateRemotePath(requested);
+    if (requested.starts_with('/') || directory == ".") return std::string(requested);
+    auto path = std::string(directory);
+    if (!path.ends_with('/')) path += '/';
+    path += requested; ValidateRemotePath(path); return path;
+}
 }
