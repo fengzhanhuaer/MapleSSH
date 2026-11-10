@@ -2,6 +2,7 @@
 #include "dialogs.hpp"
 #include "backup_labels.hpp"
 #include "command_input.hpp"
+#include "file_paths.hpp"
 #include <wx/artprov.h>
 #include <wx/choicdlg.h>
 #include <wx/splitter.h>
@@ -10,10 +11,11 @@
 #include <wx/dc.h>
 #include <algorithm>
 #include <map>
+#include <nlohmann/json.hpp>
 
 namespace maple {
 namespace {
-enum { IdNew = wxID_HIGHEST + 1, IdEdit, IdDelete, IdConnect, IdDisconnect, IdReconnect, IdSettings, IdBackup, IdRestore, IdCancel, IdLicenses, IdCredentials, IdRenameGroup, IdToggleSidebar };
+enum { IdNew = wxID_HIGHEST + 1, IdEdit, IdDelete, IdConnect, IdDisconnect, IdReconnect, IdSettings, IdBackup, IdRestore, IdCancel, IdLicenses, IdCredentials, IdRenameGroup, IdToggleSidebar, IdToggleMcp, IdToggleFiles };
 class SessionItem final : public wxTreeItemData {
 public:
     explicit SessionItem(std::string value) : id(std::move(value)) {}
@@ -68,6 +70,8 @@ MainFrame::MainFrame(Storage storage, Vault vault)
     backup->Append(IdBackup, wxS("手动备份…")); backup->Append(IdRestore, wxS("手动恢复…")); backup->Append(IdCancel, wxS("取消当前操作"));
     auto* help = new wxMenu; help->Append(wxID_ABOUT, wxS("关于 MapleSSH")); help->Append(IdLicenses, wxS("第三方许可证…"));
     auto* view = new wxMenu; view->AppendCheckItem(IdToggleSidebar, wxS("会话栏\tCtrl+Shift+L")); view->Check(IdToggleSidebar, true);
+    view->AppendCheckItem(IdToggleMcp, wxS("MCP 服务\tCtrl+Shift+M")); view->Check(IdToggleMcp, false);
+    view->AppendCheckItem(IdToggleFiles, wxS("文件浏览器\tCtrl+Shift+F")); view->Check(IdToggleFiles, true);
     menus->Append(sessions, wxS("会话")); menus->Append(backup, wxS("备份")); menus->Append(view, wxS("视图")); menus->Append(help, wxS("帮助")); SetMenuBar(menus);
     auto* toolbar = CreateToolBar(wxTB_FLAT | wxTB_TEXT);
     const wxSize iconSize(16, 16);
@@ -101,6 +105,15 @@ MainFrame::MainFrame(Storage storage, Vault vault)
     auto* layout = new wxBoxSizer(wxVERTICAL); layout->Add(splitter, 1, wxEXPAND); SetSizer(layout);
     CreateStatusBar(2); const int widths[]{-1, 220}; SetStatusWidths(2, widths);
     SetStatusText(wxS("就绪 · 配置保存在程序同目录"), 0); SetStatusText(wxS("手动 WebDAV 备份"), 1);
+    mcp_server_ = std::make_unique<McpServer>(McpServer::Callbacks{
+        [this] { return McpListSessions(); },
+        [this](std::string_view id) { return McpSessionStatus(id); },
+        [this](std::string_view id, std::string_view text) { return McpSendInput(id, text); },
+        [this](std::string_view id, std::size_t max_bytes) { return McpReadOutput(id, max_bytes); },
+        [this](std::string_view id) { return McpDisconnect(id); },
+        [this](std::string_view id) { return McpConnect(id); },
+        [this](std::string_view tool, std::string_view arguments) { return McpFiles(tool, arguments); }
+    });
     BuildTree();
     Bind(wxEVT_MENU, [this](wxCommandEvent&) {
         const auto module = GetModuleHandleW(nullptr);
@@ -131,6 +144,8 @@ MainFrame::MainFrame(Storage storage, Vault vault)
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { ManageCredentials(); }, IdCredentials);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { RenameSelectedGroup(); }, IdRenameGroup);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { ToggleSidebar(); }, IdToggleSidebar);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { ToggleMcp(); }, IdToggleMcp);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { ToggleFiles(); }, IdToggleFiles);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Settings(); }, IdSettings);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Backup(); }, IdBackup);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Restore(); }, IdRestore);
@@ -141,6 +156,8 @@ MainFrame::MainFrame(Storage storage, Vault vault)
     }, wxID_ABOUT);
     Bind(wxEVT_UPDATE_UI, [this](wxUpdateUIEvent& event) {
         if (event.GetId() == IdToggleSidebar) event.Check(sidebar_splitter_->IsSplit());
+        else if (event.GetId() == IdToggleMcp) event.Check(mcp_enabled_);
+        else if (event.GetId() == IdToggleFiles) event.Check(files_visible_);
         else if (event.GetId() == IdCancel) event.Enable(job_ && job_->client);
         else if ((event.GetId() >= IdNew && event.GetId() <= IdRestore) || event.GetId() == IdCredentials || event.GetId() == IdRenameGroup) event.Enable(!job_);
     });
@@ -159,6 +176,9 @@ MainFrame::MainFrame(Storage storage, Vault vault)
 }
 MainFrame::~MainFrame() {
     timer_.Stop();
+    mcp_accepting_ = false;
+    CancelMcpApprovals();
+    if (mcp_server_) mcp_server_->Stop();
     if (job_ && job_->client) job_->client->Cancel();
     if (background_.joinable()) background_.join();
     for (auto& tab : tabs_) { tab->terminal->SetSender({}); tab->terminal->SetResize({}); tab->client->Stop(); }
@@ -266,9 +286,128 @@ void MainFrame::ToggleSidebar() {
     const bool visible = sidebar_splitter_->IsSplit();
     GetMenuBar()->Check(IdToggleSidebar, visible); GetToolBar()->ToggleTool(IdToggleSidebar, visible); Layout();
 }
+void MainFrame::ToggleMcp() {
+    try {
+        if (mcp_enabled_) {
+            mcp_accepting_ = false; CancelMcpApprovals();
+            mcp_server_->Stop();
+            mcp_enabled_ = false;
+            SetStatusText(wxS("MCP 服务已关闭"), 0);
+        } else {
+            mcp_server_->Start();
+            mcp_accepting_ = true;
+            mcp_enabled_ = true;
+            SetStatusText(wxString::Format(wxS("MCP 服务已开启：http://127.0.0.1:%u/mcp"), mcp_server_->Port()), 0);
+        }
+        GetMenuBar()->Check(IdToggleMcp, mcp_enabled_);
+    } catch (const std::exception& error) {
+        mcp_accepting_ = false;
+        mcp_enabled_ = false;
+        GetMenuBar()->Check(IdToggleMcp, false);
+        ShowError(error);
+    }
+}
+void MainFrame::ToggleFiles() {
+    files_visible_ = !files_visible_;
+    for (auto& tab : tabs_) {
+        if (files_visible_) {
+            tab->files_panel->Show();
+            tab->files_splitter->SplitVertically(tab->terminal_area, tab->files_panel, -tab->files_width);
+        } else {
+            tab->files_width = std::max(FromDIP(220), tab->files_splitter->GetClientSize().x - tab->files_splitter->GetSashPosition());
+            tab->files_splitter->Unsplit(tab->files_panel);
+        }
+        tab->page->Layout();
+    }
+    GetMenuBar()->Check(IdToggleFiles, files_visible_); Layout();
+}
+std::string MainFrame::InvokeMcpUi(std::function<std::string()> work) {
+    struct Request { std::promise<std::string> result; std::atomic<bool> cancelled{false}; };
+    auto request = std::make_shared<Request>();
+    auto future = request->result.get_future();
+    CallAfter([this, weak = std::weak_ptr<Request>(request), work = std::move(work)]() mutable {
+        auto pending = weak.lock();
+        if (!pending || pending->cancelled || !mcp_accepting_) return;
+        try { pending->result.set_value(work()); } catch (...) { pending->result.set_exception(std::current_exception()); }
+    });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+    while (future.wait_for(std::chrono::milliseconds(50)) != std::future_status::ready) {
+        if (!mcp_accepting_ || std::chrono::steady_clock::now() >= deadline) {
+            request->cancelled = true;
+            throw std::runtime_error("MCP 服务已关闭或界面正忙，请检查状态后再决定是否重试");
+        }
+    }
+    return future.get();
+}
+std::string MainFrame::McpListSessions() {
+    return InvokeMcpUi([this] {
+        nlohmann::json sessions = nlohmann::json::array();
+        for (const auto& session : vault_.sessions) {
+            bool open = false; bool connected = false;
+            for (const auto& tab : tabs_) if (tab->session.id == session.id) { open = true; connected = tab->client->Connected(); break; }
+            sessions.push_back({{"id", session.id}, {"name", session.name}, {"group", session.group}, {"host", session.host}, {"port", session.port}, {"open", open}, {"connected", connected}});
+        }
+        return sessions.dump();
+    });
+}
+std::string MainFrame::McpSessionStatus(std::string_view id) {
+    return InvokeMcpUi([this, key = std::string(id)] {
+        const auto found = std::find_if(vault_.sessions.begin(), vault_.sessions.end(), [&key](const auto& session) { return session.id == key; });
+        if (found == vault_.sessions.end()) throw std::runtime_error("找不到指定会话");
+        nlohmann::json result = {{"id", found->id}, {"name", found->name}, {"host", found->host}, {"port", found->port}, {"open", false}, {"connected", false}};
+        for (const auto& tab : tabs_) if (tab->session.id == key) { result["open"] = true; result["connected"] = tab->client->Connected(); break; }
+        return result.dump();
+    });
+}
+std::string MainFrame::McpSendInput(std::string_view id, std::string_view text) {
+    return InvokeMcpUi([this, key = std::string(id), input = std::string(text)] {
+        for (const auto& tab : tabs_) if (tab->session.id == key) {
+            if (!tab->client->Send(input)) throw std::runtime_error("会话未连接，输入未发送");
+            return nlohmann::json{{"accepted", true}, {"session_id", key}, {"bytes", input.size()}}.dump();
+        }
+        throw std::runtime_error("会话未打开，请先在 MapleSSH 中连接");
+    });
+}
+std::string MainFrame::McpReadOutput(std::string_view id, std::size_t max_bytes) {
+    return InvokeMcpUi([this, key = std::string(id), max_bytes] {
+        for (const auto& tab : tabs_) if (tab->session.id == key) return nlohmann::json{{"session_id", key}, {"output", tab->client->OutputSnapshot(max_bytes)}}.dump();
+        throw std::runtime_error("会话未打开");
+    });
+}
+std::string MainFrame::McpDisconnect(std::string_view id) {
+    return InvokeMcpUi([this, key = std::string(id)] {
+        for (const auto& tab : tabs_) if (tab->session.id == key) { tab->client->Stop(); return nlohmann::json{{"disconnected", true}, {"session_id", key}}.dump(); }
+        throw std::runtime_error("会话未打开");
+    });
+}
+std::string MainFrame::McpConnect(std::string_view id) {
+    return InvokeMcpUi([this, key = std::string(id)] {
+        const auto found = std::find_if(vault_.sessions.begin(), vault_.sessions.end(), [&key](const auto& session) { return session.id == key; });
+        if (found == vault_.sessions.end()) throw std::runtime_error("找不到指定会话");
+        FindCredential(vault_, found->credential_id);
+        for (auto& tab : tabs_) if (tab->session.id == key) {
+            ConnectTab(*tab, *found);
+            notebook_->SetSelection(notebook_->GetPageIndex(tab->page));
+            return nlohmann::json{{"started", true}, {"session_id", key}, {"reconnected", true}}.dump();
+        }
+        if (tabs_.size() >= 16) throw std::runtime_error("首版最多同时打开 16 个终端标签");
+        auto tab = std::make_unique<Tab>();
+        auto page = std::make_unique<wxPanel>(notebook_); tab->page = page.get();
+        BuildCommandInput(*tab); ConnectTab(*tab, *found);
+        notebook_->AddPage(tab->page, wxString::FromUTF8(found->name), true);
+        page.release(); tabs_.push_back(std::move(tab)); RefreshQuickCommands(); tabs_.back()->terminal->SetFocus();
+        return nlohmann::json{{"started", true}, {"session_id", key}, {"reconnected", false}}.dump();
+    });
+}
 void MainFrame::BuildCommandInput(Tab& tab) {
     auto* target = &tab;
-    auto* splitter = new CommandSplitter(tab.page);
+    tab.files_splitter = new wxSplitterWindow(tab.page, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxSP_LIVE_UPDATE | wxBORDER_NONE);
+    tab.files_splitter->SetBackgroundColour(wxColour(17, 22, 31));
+    auto* splitter = new CommandSplitter(tab.files_splitter); tab.terminal_area = splitter;
+    tab.files_panel = new FileBrowserPanel(tab.files_splitter,
+        [target] { if (!target->client) throw std::runtime_error("SSH 未连接"); return target->client->Files(); },
+        [target](std::string command) { return target->client && target->client->Send(std::move(command)); },
+        [this] { if (files_visible_) ToggleFiles(); });
     tab.terminal = new TerminalPanel(splitter);
     auto* command_panel = new wxPanel(splitter);
     command_panel->SetBackgroundColour(wxColour(17, 22, 31));
@@ -319,7 +458,10 @@ void MainFrame::BuildCommandInput(Tab& tab) {
     command_panel->SetMinSize(wxSize(-1, layout->GetMinSize().y));
     splitter->SetMinimumPaneSize(FromDIP(64)); splitter->SetSashGravity(1.0);
     splitter->SplitHorizontally(tab.terminal, command_panel, -FromDIP(150));
-    auto* page_layout = new wxBoxSizer(wxVERTICAL); page_layout->Add(splitter, 1, wxEXPAND); tab.page->SetSizer(page_layout);
+    tab.files_width = FromDIP(320); tab.files_splitter->SetMinimumPaneSize(FromDIP(140)); tab.files_splitter->SetSashGravity(1.0);
+    tab.files_splitter->SplitVertically(splitter, tab.files_panel, -tab.files_width);
+    if (!files_visible_) tab.files_splitter->Unsplit(tab.files_panel);
+    auto* page_layout = new wxBoxSizer(wxVERTICAL); page_layout->Add(tab.files_splitter, 1, wxEXPAND); tab.page->SetSizer(page_layout);
 }
 void MainFrame::RefreshQuickCommands() {
     for (auto& tab : tabs_) {
@@ -472,10 +614,12 @@ void MainFrame::Poll(wxTimerEvent&) {
             }
         }
     }
+    for (auto& tab : tabs_) tab->files_panel->Poll(tab->client->Connected());
     CompleteJob();
 }
 void MainFrame::Close(wxCloseEvent& event) {
     if (event.CanVeto() && (!tabs_.empty() || job_) && wxMessageBox(wxS("退出将断开所有 SSH 连接并取消进行中的网络操作。确认退出？"), wxS("退出 MapleSSH"), wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION, this) != wxYES) { event.Veto(); return; }
+    mcp_accepting_ = false; CancelMcpApprovals();
     timer_.Stop(); if (job_ && job_->client) job_->client->Cancel(); event.Skip();
 }
 }

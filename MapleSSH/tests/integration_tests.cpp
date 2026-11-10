@@ -3,6 +3,7 @@
 #include "webdav.hpp"
 #include "storage.hpp"
 #include "command_input.hpp"
+#include "sftp_client.hpp"
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <iostream>
@@ -73,6 +74,86 @@ void CheckSsh(Session session, Credential credential, bool trust, bool expect_au
     SshClient client(std::move(session), std::move(credential));
     CheckSshClient(client, trust, expect_authentication);
 }
+FileSnapshot WaitFile(SftpClient& files, const std::string& id) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    for (;;) {
+        auto snapshot = files.Snapshot(id);
+        if (snapshot.state != "running") return snapshot;
+        if (std::chrono::steady_clock::now() >= deadline) { files.Cancel(id); throw std::runtime_error("SFTP fixture timeout"); }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+}
+void CheckSftp(const Session& session, const Credential& credential, int metrics_port, const std::filesystem::path& temporary) {
+    SshClient terminal(session, credential);
+    terminal.Start();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!terminal.Connected()) {
+        for (const auto& event : terminal.Drain()) if (event.kind == SshEventKind::HostKey) terminal.ConfirmHost(true);
+        if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error("SFTP terminal fixture login failed");
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto before = AuthenticationCount(metrics_port);
+    SftpClient wrong_key(session, credential, "wrong-host-key");
+    auto result = WaitFile(wrong_key, wrong_key.Submit(FileOperation::List, "/"));
+    Require(result.state == "failed" && AuthenticationCount(metrics_port) == before, "SFTP sent credentials before checking pinned key");
+    auto files = terminal.Files();
+    result = WaitFile(*files, files->Submit(FileOperation::List, "."));
+    Require(result.state == "succeeded" && result.remote_path == "/" && !result.entries.empty(), "SFTP root listing failed");
+    const auto remote = std::string("/目录 'space/中文 'binary;.bin");
+    const auto source = temporary / L"上传 'binary.bin";
+    const auto destination = temporary / L"下载 'binary.bin";
+    Bytes content(512 * 1024); for (std::size_t index = 0; index < content.size(); ++index) content[index] = static_cast<unsigned char>(index % 251);
+    WriteAtomic(source, content);
+    auto upload = files->Submit(FileOperation::Upload, remote, source);
+    Require(terminal.Send("sftp-terminal-alive\r"), "terminal stopped during SFTP upload");
+    result = WaitFile(*files, upload);
+    if (result.state != "succeeded") throw std::runtime_error("SFTP upload failed: " + result.error);
+    Require(result.bytes == content.size(), "SFTP upload progress wrong");
+    result = WaitFile(*files, files->Submit(FileOperation::List, "/目录 'space"));
+    Require(result.state == "succeeded" && result.entries.size() == 1 && result.entries.front().regular && result.entries.front().size == content.size(), "SFTP uploaded file not listed");
+    result = WaitFile(*files, files->Submit(FileOperation::Download, remote, destination));
+    if (result.state != "succeeded") throw std::runtime_error("SFTP download failed: " + result.error);
+    Require(ReadBytes(destination) == content, "SFTP binary round trip corrupted");
+    result = WaitFile(*files, files->Submit(FileOperation::Upload, remote, source));
+    Require(result.state == "failed", "SFTP silently overwrote remote file");
+    result = WaitFile(*files, files->Submit(FileOperation::Download, remote, destination));
+    Require(result.state == "failed" && ReadBytes(destination) == content, "SFTP silently overwrote local file");
+    Bytes replacement{1, 0, 2, 255, 3}; WriteAtomic(source, replacement);
+    result = WaitFile(*files, files->Submit(FileOperation::Upload, remote, source, true));
+    if (result.state != "succeeded") throw std::runtime_error("SFTP explicit overwrite failed: " + result.error);
+    result = WaitFile(*files, files->Submit(FileOperation::Download, remote, destination, true));
+    Require(result.state == "succeeded" && ReadBytes(destination) == replacement, "SFTP explicit replacement round trip failed");
+    const auto cancel = files->Submit(FileOperation::Download, remote, temporary / "cancelled.bin"); files->Cancel(cancel);
+    result = WaitFile(*files, cancel);
+    Require(result.state == "cancelled" && !std::filesystem::exists(temporary / "cancelled.bin"), "SFTP cancelled download was committed");
+    WriteAtomic(source, Bytes(8 * 1024 * 1024, 42));
+    const auto active = files->Submit(FileOperation::Upload, remote, source, true);
+    const auto active_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (files->Snapshot(active).bytes == 0 && files->Snapshot(active).state == "running" && std::chrono::steady_clock::now() < active_deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    Require(files->Snapshot(active).bytes > 0 && files->Snapshot(active).state == "running", "fixture did not reach active transfer");
+    Require(terminal.Send("terminal-during-active-upload\r"), "terminal rejected input during transfer");
+    const auto echo_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (terminal.OutputSnapshot().find("terminal-during-active-upload") == std::string::npos && std::chrono::steady_clock::now() < echo_deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    Require(terminal.OutputSnapshot().find("terminal-during-active-upload") != std::string::npos, "terminal output stalled during active SFTP upload");
+    files->Cancel(active); result = WaitFile(*files, active);
+    Require(result.state == "cancelled" && result.bytes < result.total, "active upload cancellation failed");
+    result = WaitFile(*files, files->Submit(FileOperation::Download, remote, destination, true));
+    Require(result.state == "succeeded" && ReadBytes(destination) == replacement, "cancelled upload changed original target");
+    result = WaitFile(*files, files->Submit(FileOperation::List, "/missing-directory"));
+    Require(result.state == "failed" && terminal.Connected(), "missing directory killed terminal");
+    result = WaitFile(*files, files->Submit(FileOperation::Download, "/目录 'space", temporary / "directory.bin"));
+    Require(result.state == "failed" && !std::filesystem::exists(temporary / "directory.bin"), "directory downloaded as a regular file");
+    for (int attempt = 0; attempt < 100 && terminal.OutputSnapshot().find("sftp-terminal-alive") == std::string::npos; ++attempt) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    Require(terminal.OutputSnapshot().find("sftp-terminal-alive") != std::string::npos, "terminal I/O was blocked by SFTP");
+    auto pending = files->Submit(FileOperation::Upload, "/disconnected.bin", source);
+    const auto disconnect_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (files->Snapshot(pending).bytes == 0 && files->Snapshot(pending).state == "running" && std::chrono::steady_clock::now() < disconnect_deadline) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const auto disconnect_at = std::chrono::steady_clock::now(); terminal.Stop();
+    Require(files->Snapshot(pending).state != "running", "disconnect left SFTP task running");
+    Require(std::chrono::steady_clock::now() - disconnect_at < std::chrono::seconds(3), "disconnect blocked on SFTP transfer");
+    RejectWith([&] { terminal.Files(); }, "连接");
+    std::cout << "SFTP pinned host before auth, list, binary/Unicode round trip, overwrite protection, cancel and independent terminal PASS\n";
+}
 int main(int argc, char** argv) {
     try {
         if (argc != 2) throw std::runtime_error("provide isolated fixture ready.json");
@@ -82,6 +163,7 @@ int main(int argc, char** argv) {
         session.id = "integration"; session.name = "fixture"; session.host = "127.0.0.1";
         session.port = information.at("ssh_port"); credential.username = information.at("username"); credential.password = information.at("password"); session.timeout_seconds = 5;
         const auto metrics_port = information.value("metrics_port", information.at("dav_port").get<int>());
+        CheckSftp(session, credential, metrics_port, std::filesystem::path(argv[1]).parent_path());
         const auto before = AuthenticationCount(metrics_port);
         CheckSsh(session, credential, false);
         Require(AuthenticationCount(metrics_port) == before, "credentials reached an untrusted host");

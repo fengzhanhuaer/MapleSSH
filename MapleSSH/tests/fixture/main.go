@@ -19,9 +19,27 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/webdav"
 )
+
+type slowWriter struct{ io.WriterAt }
+
+func (writer slowWriter) WriteAt(content []byte, offset int64) (int, error) {
+	time.Sleep(5 * time.Millisecond)
+	return writer.WriterAt.WriteAt(content, offset)
+}
+
+type slowUploads struct{ sftp.FileWriter }
+
+func (files slowUploads) Filewrite(request *sftp.Request) (io.WriterAt, error) {
+	writer, err := files.FileWriter.Filewrite(request)
+	if err != nil {
+		return nil, err
+	}
+	return slowWriter{writer}, nil
+}
 
 func run() error {
 	root := flag.String("root", "", "isolated test directory")
@@ -89,6 +107,11 @@ func run() error {
 		},
 	}
 	config.AddHostKey(hostSigner)
+	files := sftp.InMemHandler()
+	files.FilePut = slowUploads{files.FilePut}
+	if err := files.FileCmd.Filecmd(&sftp.Request{Method: "Mkdir", Filepath: "/目录 'space"}); err != nil {
+		return err
+	}
 	sshListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
@@ -135,9 +158,17 @@ func run() error {
 								accepted = ssh.Unmarshal(request.Payload, &size) == nil && size.Columns > 0 && size.Rows > 0
 							case "shell":
 								accepted = !shellStarted && len(request.Payload) == 0
+							case "subsystem":
+								var subsystem struct{ Name string }
+								accepted = ssh.Unmarshal(request.Payload, &subsystem) == nil && subsystem.Name == "sftp"
 							}
 							request.Reply(accepted, nil)
-							if accepted && request.Type == "shell" {
+							if accepted && request.Type == "subsystem" {
+								server := sftp.NewRequestServer(channel, files)
+								server.Serve()
+								server.Close()
+								return
+							} else if accepted && request.Type == "shell" {
 								shellStarted = true
 								go func() {
 									io.WriteString(channel, "\x1b[32mfixture-ready\x1b[0m\r\n中文终端测试：正在连接，正在认证，已连接。\r\n")
